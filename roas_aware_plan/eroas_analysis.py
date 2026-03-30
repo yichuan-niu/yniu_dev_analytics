@@ -14,7 +14,7 @@ plt.close("all")
 # ── Config ─────────────────────────────────────────────────────────────────────
 
 target_campaign_id = "0b76b55d-a017-4f77-a9a7-38fc41c90d2d"
-daily_budget = 42500 * 2 # in cent
+daily_budget = 42500 # in cent
 value_filtering_quantile = 0.95
 
 #%%
@@ -40,22 +40,18 @@ def compute_metrics(candidates: list, target_campaign_id: str) -> dict:
 
     eROAS logic
     -----------
-    - Among all target-campaign entries, pick the one with the highest
-      expected_purchase_value = itemPrice * adQualityScore.
-    - eROAS = expected_purchase_value / impression_cost
+    - If target IS the winner → eROAS = winner_epv / winner_impression_cost
+    - If target is NOT the winner → for each target candidate compute
+      epv / impression_cost, then take the maximum.
     """
     # --- Target campaign entries ---
     target_entries = [c for c in candidates if c.get("campaignId") == target_campaign_id]
     if not target_entries:
         return {"eROAS": np.nan, "impression_cost": np.nan, "best_quality_score": np.nan}
 
-    # Best expected purchase value across all target entries
     def epv(c):
         return (c.get("itemPrice") or 0.0) * (c.get("adQualityScore") or 0.0) * (c.get("predictedCtc") or 0.0)
-    
 
-    best_target = max(target_entries, key=epv)
-    expected_purchase_value = epv(best_target)
     best_quality_score = max(c.get("adQualityScore") or 0.0 for c in target_entries)
     best_conversion_prob = max((c.get("adQualityScore") or 0.0) * (c.get("predictedCtc") or 0.0) for c in target_entries)
 
@@ -65,18 +61,19 @@ def compute_metrics(candidates: list, target_campaign_id: str) -> dict:
         return {"eROAS": np.nan, "impression_cost": np.nan, "best_quality_score": best_quality_score}
     winner = winner_entries[0]
 
-    # --- Impression cost ---
+    # --- eROAS ---
     if winner.get("campaignId") == target_campaign_id:
+        # Target won: use the winner entry's EPV and nextAdScore as impression cost
         pricing = winner.get("pricingMetadata") or {}
         impression_cost = pricing.get("nextAdScore", np.nan)
+        eroas = epv(winner) / impression_cost if impression_cost and impression_cost > 0 else np.nan
     else:
+        # Target didn't win: impression_cost is the winner's adScore (cost to beat)
         impression_cost = winner.get("adScore", np.nan)
-
-    # --- eROAS ---
-    if impression_cost and impression_cost > 0:
-        eroas = expected_purchase_value / impression_cost
-    else:
-        eroas = np.nan
+        if impression_cost and impression_cost > 0:
+            eroas = max(epv(c) / impression_cost for c in target_entries)
+        else:
+            eroas = np.nan
 
     return {
         "eROAS": eroas,
@@ -218,7 +215,11 @@ ad_spend = 0.0
 for _, row in df_eroas_filtered.iterrows():
     if pd.isna(row["eROAS"]) or pd.isna(row["impression_cost"]):
         continue
-    best_opportunities.append(row["occurred_at"])
+    best_opportunities.append({
+        "occurred_at": row["occurred_at"],
+        "eROAS": row["eROAS"],
+        "impression_cost": row["impression_cost"],
+    })
     ad_spend += row["impression_cost"]
     if ad_spend > daily_budget:
         break
@@ -231,14 +232,15 @@ print(f"Cumulative ad_spend: {ad_spend:.4f}  (budget: {daily_budget})")
 
 hourly_buckets: dict[int, list] = {hour: [] for hour in range(24)}
 
-for ts in best_opportunities:
+for opp in best_opportunities:
+    ts = opp["occurred_at"]
     if pd.isna(ts):
         continue
-    hourly_buckets[pd.Timestamp(ts).hour].append(ts)
+    hourly_buckets[pd.Timestamp(ts).hour].append(opp)
 
 
-max_count = max(len(v) for v in hourly_buckets.values()) if hourly_buckets else 1                                     
-bar_width = 50                                                                          
+max_count = max(len(v) for v in hourly_buckets.values()) if hourly_buckets else 1
+bar_width = 50
 print("\nHourly distribution of best eROAS:")
 for hour in range(24):
     count = len(hourly_buckets[hour])
@@ -247,7 +249,7 @@ for hour in range(24):
     print(f"  {hour:02d}h  {count:4d}  {bar}")
 
 
-hours = list(range(24))                                                                                                  
+hours = list(range(24))
 eroas_counts = [len(hourly_buckets[h]) for h in hours]
 
 fig_e, axes_e = plt.subplots(1, 2, figsize=(16, 4), sharey=False)
@@ -271,6 +273,34 @@ for ax, log in zip(axes_e, [False, True]):
 fig_e.tight_layout()
 fig_e.show()
 
+# ── Figure: Hourly eROAS from best opportunities ───────────────────────────────
+
+def hourly_eroas(buckets: dict) -> list:
+    """For each hour, compute sum(epv) / sum(impression_cost) where epv = eROAS * impression_cost."""
+    result = []
+    for h in range(24):
+        opps = buckets[h]
+        total_cost = sum(o["impression_cost"] for o in opps)
+        total_epv  = sum(o["eROAS"] * o["impression_cost"] for o in opps)
+        result.append(total_epv / total_cost if total_cost > 0 else 0.0)
+    return result
+
+eroas_hourly = hourly_eroas(hourly_buckets)
+
+fig_er, ax_er = plt.subplots(figsize=(14, 4))
+fig_er.suptitle(f"Hourly eROAS by Distribution (Best eROAS Opportunities), Daily Budget = ${daily_budget / 100}")
+ax_er.bar(hours, eroas_hourly, color="steelblue", edgecolor="white")
+ax_er.set_xticks(hours)
+ax_er.set_xticklabels([f"{h:02d}h" for h in hours], rotation=45, ha="right", fontsize=8)
+ax_er.set_xlabel("Hour")
+ax_er.set_ylabel("eROAS")
+ax_er.grid(True, axis="y", linestyle="--", alpha=0.5)
+for i, v in enumerate(eroas_hourly):
+    if v > 0:
+        ax_er.text(i, v + max(eroas_hourly) * 0.01, f"{v:.2f}", ha="center", va="bottom", fontsize=6)
+fig_er.tight_layout()
+fig_er.show()
+
 #%%
 # ── 4. Collect best opportunities within daily budget ──────────────────────────
 df_quality_score_filtered = df_quality_score_filtered.sort_values("best_quality_score", ascending=False, na_position="last").reset_index(drop=True)
@@ -282,7 +312,11 @@ ad_spend = 0.0
 for _, row in df_quality_score_filtered.iterrows():
     if pd.isna(row["best_quality_score"]) or pd.isna(row["impression_cost"]):
         continue
-    best_opportunities.append(row["occurred_at"])
+    best_opportunities.append({
+        "occurred_at": row["occurred_at"],
+        "eROAS": row["eROAS"],
+        "impression_cost": row["impression_cost"],
+    })
     ad_spend += row["impression_cost"]
     if ad_spend > daily_budget:
         break
@@ -295,13 +329,14 @@ print(f"Cumulative ad_spend: {ad_spend:.4f}  (budget: {daily_budget})")
 
 hourly_buckets: dict[int, list] = {hour: [] for hour in range(24)}
 
-for ts in best_opportunities:
+for opp in best_opportunities:
+    ts = opp["occurred_at"]
     if pd.isna(ts):
         continue
-    hourly_buckets[pd.Timestamp(ts).hour].append(ts)
+    hourly_buckets[pd.Timestamp(ts).hour].append(opp)
 
 
-max_count = max(len(v) for v in hourly_buckets.values()) if hourly_buckets else 1                                     
+max_count = max(len(v) for v in hourly_buckets.values()) if hourly_buckets else 1
 bar_width = 50
 print("\nHourly distribution of best Pclick:")
 for hour in range(24):
@@ -334,6 +369,24 @@ for ax, log in zip(axes_p, [False, True]):
 fig_p.tight_layout()
 fig_p.show()
 
+# ── Figure: Hourly eROAS from best Pclick opportunities ───────────────────────
+
+pclick_eroas_hourly = hourly_eroas(hourly_buckets)
+
+fig_pr, ax_pr = plt.subplots(figsize=(14, 4))
+fig_pr.suptitle(f"Hourly eROAS by Distribution (Best Pclick Opportunities), Daily Budget = ${daily_budget / 100}")
+ax_pr.bar(hours, pclick_eroas_hourly, color="darkorange", edgecolor="white")
+ax_pr.set_xticks(hours)
+ax_pr.set_xticklabels([f"{h:02d}h" for h in hours], rotation=45, ha="right", fontsize=8)
+ax_pr.set_xlabel("Hour")
+ax_pr.set_ylabel("eROAS")
+ax_pr.grid(True, axis="y", linestyle="--", alpha=0.5)
+for i, v in enumerate(pclick_eroas_hourly):
+    if v > 0:
+        ax_pr.text(i, v + max(pclick_eroas_hourly) * 0.01, f"{v:.2f}", ha="center", va="bottom", fontsize=6)
+fig_pr.tight_layout()
+fig_pr.show()
+
 
 #%%
 # ── 4. Collect best opportunities within daily budget ──────────────────────────
@@ -346,7 +399,11 @@ ad_spend = 0.0
 for _, row in df_conversion_prob_filtered.iterrows():
     if pd.isna(row["best_conversion_prob"]) or pd.isna(row["impression_cost"]):
         continue
-    best_opportunities.append(row["occurred_at"])
+    best_opportunities.append({
+        "occurred_at": row["occurred_at"],
+        "eROAS": row["eROAS"],
+        "impression_cost": row["impression_cost"],
+    })
     ad_spend += row["impression_cost"]
     if ad_spend > daily_budget:
         break
@@ -359,13 +416,14 @@ print(f"Cumulative ad_spend: {ad_spend:.4f}  (budget: {daily_budget})")
 
 hourly_buckets: dict[int, list] = {hour: [] for hour in range(24)}
 
-for ts in best_opportunities:
+for opp in best_opportunities:
+    ts = opp["occurred_at"]
     if pd.isna(ts):
         continue
-    hourly_buckets[pd.Timestamp(ts).hour].append(ts)
+    hourly_buckets[pd.Timestamp(ts).hour].append(opp)
 
 
-max_count = max(len(v) for v in hourly_buckets.values()) if hourly_buckets else 1                                     
+max_count = max(len(v) for v in hourly_buckets.values()) if hourly_buckets else 1
 bar_width = 50
 print("\nHourly distribution of best Conversion:")
 for hour in range(24):
@@ -397,3 +455,59 @@ for ax, log in zip(axes_p, [False, True]):
 
 fig_p.tight_layout()
 fig_p.show()
+
+# ── Figure: Hourly eROAS from best Conversion opportunities ───────────────────
+
+conv_eroas_hourly = hourly_eroas(hourly_buckets)
+
+fig_cr, ax_cr = plt.subplots(figsize=(14, 4))
+fig_cr.suptitle(f"Hourly eROAS by Distribution (Best Conversion Opportunities), Daily Budget = ${daily_budget / 100}")
+ax_cr.bar(hours, conv_eroas_hourly, color="darkorange", edgecolor="white")
+ax_cr.set_xticks(hours)
+ax_cr.set_xticklabels([f"{h:02d}h" for h in hours], rotation=45, ha="right", fontsize=8)
+ax_cr.set_xlabel("Hour")
+ax_cr.set_ylabel("eROAS")
+ax_cr.grid(True, axis="y", linestyle="--", alpha=0.5)
+for i, v in enumerate(conv_eroas_hourly):
+    if v > 0:
+        ax_cr.text(i, v + max(conv_eroas_hourly) * 0.01, f"{v:.2f}", ha="center", va="bottom", fontsize=6)
+fig_cr.tight_layout()
+fig_cr.show()
+
+
+#%%
+# ── Prod Hourly eROAS by Distribution ──
+
+# Find auctions where target_campaign_id is the winner (auctionRank == 0)
+# and compute epv = eROAS * impression_cost for each, then aggregate hourly.
+
+prod_hourly_buckets: dict[int, list] = {hour: [] for hour in range(24)}
+
+for _, row in df.iterrows():
+    if pd.isna(row["eROAS"]) or pd.isna(row["impression_cost"]) or pd.isna(row["occurred_at"]):
+        continue
+    candidates = row["candidates"]
+    winner_entries = [c for c in candidates if c.get("auctionRank") == 0 and c.get("campaignId") == target_campaign_id]
+    if not winner_entries:
+        continue
+    hour = pd.Timestamp(row["occurred_at"]).hour
+    prod_hourly_buckets[hour].append({
+        "eROAS": row["eROAS"],
+        "impression_cost": row["impression_cost"],
+    })
+
+prod_eroas_hourly = hourly_eroas(prod_hourly_buckets)
+
+fig_prod, ax_prod = plt.subplots(figsize=(14, 4))
+fig_prod.suptitle("Hourly eROAS by Distribution (Prod), Daily Budget = $425")
+ax_prod.bar(hours, prod_eroas_hourly, color="seagreen", edgecolor="white")
+ax_prod.set_xticks(hours)
+ax_prod.set_xticklabels([f"{h:02d}h" for h in hours], rotation=45, ha="right", fontsize=8)
+ax_prod.set_xlabel("Hour")
+ax_prod.set_ylabel("eROAS")
+ax_prod.grid(True, axis="y", linestyle="--", alpha=0.5)
+for i, v in enumerate(prod_eroas_hourly):
+    if v > 0:
+        ax_prod.text(i, v + max(prod_eroas_hourly) * 0.01, f"{v:.2f}", ha="center", va="bottom", fontsize=6)
+fig_prod.tight_layout()
+fig_prod.show()
