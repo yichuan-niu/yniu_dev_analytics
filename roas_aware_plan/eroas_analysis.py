@@ -14,7 +14,7 @@ plt.close("all")
 # ── Config ─────────────────────────────────────────────────────────────────────
 
 target_campaign_id = "0b76b55d-a017-4f77-a9a7-38fc41c90d2d"
-daily_budget = 42500 # in cent
+daily_budget = 42500 * 2 # in cent
 value_filtering_quantile = 0.95
 
 #%%
@@ -77,6 +77,7 @@ def compute_metrics(candidates: list, target_campaign_id: str) -> dict:
 
     return {
         "eROAS": eroas,
+        "epv": eroas * impression_cost,
         "impression_cost": impression_cost,
         "best_quality_score": best_quality_score,
         "best_conversion_prob": best_conversion_prob
@@ -98,11 +99,11 @@ quantile_levels = np.arange(0.05, 1.01, 0.05)
 eroas = df["eROAS"].dropna()
 bqs = df["best_quality_score"].dropna()
 bcp = df["best_conversion_prob"].dropna()
+epv = df["epv"].dropna()
 
 eroas_boundaries = eroas.quantile(q_levels).values
 eroas_quantile_values = eroas.quantile(quantile_levels)
 bqs_quantile_values = bqs.quantile(quantile_levels)
-bcp_quantile_values = bcp.quantile(quantile_levels)
 
 # ── Figure 1: quantile vs value for eROAS and best_quality_score ────────────
 fig1, axes1 = plt.subplots(1, 2, figsize=(18, 5))
@@ -189,11 +190,12 @@ fig2.show()
 eroas_q95 = df["eROAS"].quantile(value_filtering_quantile)
 quality_q95 = df["best_quality_score"].quantile(value_filtering_quantile)
 conversion_q95 = df["best_conversion_prob"].quantile(value_filtering_quantile)
+epv_q95 = df["epv"].quantile(value_filtering_quantile)
 
 df_eroas_filtered = df[df["eROAS"] <= eroas_q95].reset_index(drop=True)
 df_quality_score_filtered = df[df["best_quality_score"] <= quality_q95].reset_index(drop=True)
 df_conversion_prob_filtered = df[df["best_conversion_prob"] <= conversion_q95].reset_index(drop=True)
-
+df_epv_filtered = df[df["epv"] <= epv_q95].reset_index(drop=True)
 
 print(f"eROAS 0.95 quantile threshold:         {eroas_q95:.4f}")
 print(f"best_quality_score 0.95 quantile threshold: {quality_q95:.4f}")
@@ -289,6 +291,105 @@ eroas_hourly = hourly_eroas(hourly_buckets)
 
 fig_er, ax_er = plt.subplots(figsize=(14, 4))
 fig_er.suptitle(f"Hourly eROAS by Distribution (Best eROAS Opportunities), Daily Budget = ${daily_budget / 100}")
+ax_er.bar(hours, eroas_hourly, color="steelblue", edgecolor="white")
+ax_er.set_xticks(hours)
+ax_er.set_xticklabels([f"{h:02d}h" for h in hours], rotation=45, ha="right", fontsize=8)
+ax_er.set_xlabel("Hour")
+ax_er.set_ylabel("eROAS")
+ax_er.grid(True, axis="y", linestyle="--", alpha=0.5)
+for i, v in enumerate(eroas_hourly):
+    if v > 0:
+        ax_er.text(i, v + max(eroas_hourly) * 0.01, f"{v:.2f}", ha="center", va="bottom", fontsize=6)
+fig_er.tight_layout()
+fig_er.show()
+
+
+#%%
+# ── 4. Collect best opportunities within daily budget ──────────────────────────
+df_epv_filtered = df_epv_filtered.sort_values("epv", ascending=False, na_position="last").reset_index(drop=True)
+
+
+best_opportunities = []
+ad_spend = 0.0
+
+for _, row in df_epv_filtered.iterrows():
+    if pd.isna(row["eROAS"]) or pd.isna(row["impression_cost"]):
+        continue
+    best_opportunities.append({
+        "occurred_at": row["occurred_at"],
+        "eROAS": row["eROAS"],
+        "epv": row["epv"],
+        "impression_cost": row["impression_cost"],
+    })
+    ad_spend += row["impression_cost"]
+    if ad_spend > daily_budget:
+        break
+
+print(f"\nBest opportunities: {len(best_opportunities):,} auctions")
+print(f"Cumulative ad_spend: {ad_spend:.4f}  (budget: {daily_budget})")
+
+
+# ── 5. Distribute into 24 hourly buckets ──────────────────────────────────────
+
+hourly_buckets: dict[int, list] = {hour: [] for hour in range(24)}
+
+for opp in best_opportunities:
+    ts = opp["occurred_at"]
+    if pd.isna(ts):
+        continue
+    hourly_buckets[pd.Timestamp(ts).hour].append(opp)
+
+
+max_count = max(len(v) for v in hourly_buckets.values()) if hourly_buckets else 1
+bar_width = 50
+print("\nHourly distribution of best ePV:")
+for hour in range(24):
+    count = len(hourly_buckets[hour])
+    filled = round(count / max_count * bar_width)
+    bar = "█" * filled + "░" * (bar_width - filled)
+    print(f"  {hour:02d}h  {count:4d}  {bar}")
+
+
+hours = list(range(24))
+eroas_counts = [len(hourly_buckets[h]) for h in hours]
+
+fig_e, axes_e = plt.subplots(1, 2, figsize=(16, 4), sharey=False)
+fig_e.suptitle("Hourly Distribution of Best eROAS Opportunities")
+
+for ax, log in zip(axes_e, [False, True]):
+    ax.bar(hours, eroas_counts, color="steelblue", edgecolor="white")
+    ax.set_xticks(hours)
+    ax.set_xticklabels([f"{h:02d}h" for h in hours], rotation=45, ha="right", fontsize=8)
+    ax.set_xlabel("Hour")
+    ax.set_ylabel("Count (log scale)" if log else "Count")
+    ax.set_title("Log Scale" if log else "Original Scale")
+    ax.grid(True, axis="y", linestyle="--", alpha=0.5)
+    if log:
+        ax.set_yscale("log")
+    for i, v in enumerate(eroas_counts):
+        if v > 0:
+            ax.text(i, v * (1.05 if log else 1) + (0 if log else max(eroas_counts) * 0.01),
+                    str(v), ha="center", va="bottom", fontsize=6)
+
+fig_e.tight_layout()
+fig_e.show()
+
+# ── Figure: Hourly eROAS from best opportunities ───────────────────────────────
+
+def hourly_eroas(buckets: dict) -> list:
+    """For each hour, compute sum(epv) / sum(impression_cost) where epv = eROAS * impression_cost."""
+    result = []
+    for h in range(24):
+        opps = buckets[h]
+        total_cost = sum(o["impression_cost"] for o in opps)
+        total_epv  = sum(o["epv"] for o in opps)
+        result.append(total_epv / total_cost if total_cost > 0 else 0.0)
+    return result
+
+eroas_hourly = hourly_eroas(hourly_buckets)
+
+fig_er, ax_er = plt.subplots(figsize=(14, 4))
+fig_er.suptitle(f"Hourly eROAS by Distribution (Best ePV Opportunities), Daily Budget = ${daily_budget / 100}")
 ax_er.bar(hours, eroas_hourly, color="steelblue", edgecolor="white")
 ax_er.set_xticks(hours)
 ax_er.set_xticklabels([f"{h:02d}h" for h in hours], rotation=45, ha="right", fontsize=8)
@@ -483,7 +584,7 @@ fig_cr.show()
 
 prod_hourly_buckets: dict[int, list] = {hour: [] for hour in range(24)}
 
-for _, row in df.iterrows():
+for _, row in df_eroas_filtered.iterrows():
     if pd.isna(row["eROAS"]) or pd.isna(row["impression_cost"]) or pd.isna(row["occurred_at"]):
         continue
     candidates = row["candidates"]
