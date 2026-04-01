@@ -354,7 +354,7 @@ hours = list(range(24))
 eroas_counts = [len(hourly_buckets[h]) for h in hours]
 
 fig_e, axes_e = plt.subplots(1, 2, figsize=(16, 4), sharey=False)
-fig_e.suptitle("Hourly Distribution of Best eROAS Opportunities")
+fig_e.suptitle("Hourly Distribution of Best ePV Opportunities")
 
 for ax, log in zip(axes_e, [False, True]):
     ax.bar(hours, eroas_counts, color="steelblue", edgecolor="white")
