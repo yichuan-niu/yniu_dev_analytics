@@ -98,8 +98,6 @@ quantile_levels = np.arange(0.05, 1.01, 0.05)
 
 eroas = df["eROAS"].dropna()
 bqs = df["best_quality_score"].dropna()
-bcp = df["best_conversion_prob"].dropna()
-epv = df["epv"].dropna()
 
 eroas_boundaries = eroas.quantile(q_levels).values
 eroas_quantile_values = eroas.quantile(quantile_levels)
