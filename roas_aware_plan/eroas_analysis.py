@@ -14,7 +14,7 @@ plt.close("all")
 # ── Config ─────────────────────────────────────────────────────────────────────
 
 target_campaign_id = "0b76b55d-a017-4f77-a9a7-38fc41c90d2d"
-daily_budget = 42500 * 2 # in cent
+daily_budget = 42500 # in cent
 value_filtering_quantile = 0.95
 
 #%%
@@ -243,12 +243,6 @@ for opp in best_opportunities:
 
 max_count = max(len(v) for v in hourly_buckets.values()) if hourly_buckets else 1
 bar_width = 50
-print("\nHourly distribution of best eROAS:")
-for hour in range(24):
-    count = len(hourly_buckets[hour])
-    filled = round(count / max_count * bar_width)
-    bar = "█" * filled + "░" * (bar_width - filled)
-    print(f"  {hour:02d}h  {count:4d}  {bar}")
 
 
 hours = list(range(24))
@@ -342,12 +336,6 @@ for opp in best_opportunities:
 
 max_count = max(len(v) for v in hourly_buckets.values()) if hourly_buckets else 1
 bar_width = 50
-print("\nHourly distribution of best ePV:")
-for hour in range(24):
-    count = len(hourly_buckets[hour])
-    filled = round(count / max_count * bar_width)
-    bar = "█" * filled + "░" * (bar_width - filled)
-    print(f"  {hour:02d}h  {count:4d}  {bar}")
 
 
 hours = list(range(24))
@@ -439,12 +427,6 @@ for opp in best_opportunities:
 
 max_count = max(len(v) for v in hourly_buckets.values()) if hourly_buckets else 1
 bar_width = 50
-print("\nHourly distribution of best Pclick:")
-for hour in range(24):
-    count = len(hourly_buckets[hour])
-    filled = round(count / max_count * bar_width)
-    bar = "█" * filled + "░" * (bar_width - filled)
-    print(f"  {hour:02d}h  {count:4d}  {bar}")
 
 hours = list(range(24))
 pclick_counts = [len(hourly_buckets[h]) for h in hours]
@@ -526,12 +508,6 @@ for opp in best_opportunities:
 
 max_count = max(len(v) for v in hourly_buckets.values()) if hourly_buckets else 1
 bar_width = 50
-print("\nHourly distribution of best Conversion:")
-for hour in range(24):
-    count = len(hourly_buckets[hour])
-    filled = round(count / max_count * bar_width)
-    bar = "█" * filled + "░" * (bar_width - filled)
-    print(f"  {hour:02d}h  {count:4d}  {bar}")
 
 hours = list(range(24))
 pclick_counts = [len(hourly_buckets[h]) for h in hours]
@@ -579,9 +555,45 @@ fig_cr.show()
 #%%
 # ── Prod Hourly eROAS by Distribution ──
 
-# Find auctions where target_campaign_id is the winner (auctionRank == 0)
-# and compute epv = eROAS * impression_cost for each, then aggregate hourly.
+# ── Win count buckets: traverse all auctions in df ────────────────────────────
+prod_win_buckets: dict[int, int] = {hour: 0 for hour in range(24)}
 
+for _, row in df.iterrows():
+    if pd.isna(row["occurred_at"]):
+        continue
+    candidates = row["candidates"]
+    winner_entries = [c for c in candidates if c.get("auctionRank") == 0 and c.get("campaignId") == target_campaign_id]
+    if not winner_entries:
+        continue
+    prod_win_buckets[pd.Timestamp(row["occurred_at"]).hour] += 1
+
+prod_win_counts = [prod_win_buckets[h] for h in hours]
+
+max_count = max(prod_win_counts) if max(prod_win_counts) > 0 else 1
+bar_width = 50
+
+fig_pw, axes_pw = plt.subplots(1, 2, figsize=(16, 4), sharey=False)
+fig_pw.suptitle("Hourly Distribution of Prod Auction Wins")
+
+for ax, log in zip(axes_pw, [False, True]):
+    ax.bar(hours, prod_win_counts, color="seagreen", edgecolor="white")
+    ax.set_xticks(hours)
+    ax.set_xticklabels([f"{h:02d}h" for h in hours], rotation=45, ha="right", fontsize=8)
+    ax.set_xlabel("Hour")
+    ax.set_ylabel("Count (log scale)" if log else "Count")
+    ax.set_title("Log Scale" if log else "Original Scale")
+    ax.grid(True, axis="y", linestyle="--", alpha=0.5)
+    if log:
+        ax.set_yscale("log")
+    for i, v in enumerate(prod_win_counts):
+        if v > 0:
+            ax.text(i, v * (1.05 if log else 1) + (0 if log else max(prod_win_counts) * 0.01),
+                    str(v), ha="center", va="bottom", fontsize=6)
+
+fig_pw.tight_layout()
+fig_pw.show()
+
+# ── eROAS buckets: traverse df_eroas_filtered (outliers removed) ──────────────
 prod_hourly_buckets: dict[int, list] = {hour: [] for hour in range(24)}
 
 for _, row in df_eroas_filtered.iterrows():
@@ -594,13 +606,14 @@ for _, row in df_eroas_filtered.iterrows():
     hour = pd.Timestamp(row["occurred_at"]).hour
     prod_hourly_buckets[hour].append({
         "eROAS": row["eROAS"],
+        "epv": row["epv"],
         "impression_cost": row["impression_cost"],
     })
 
 prod_eroas_hourly = hourly_eroas(prod_hourly_buckets)
 
 fig_prod, ax_prod = plt.subplots(figsize=(14, 4))
-fig_prod.suptitle("Hourly eROAS by Distribution (Prod), Daily Budget = $425")
+fig_prod.suptitle(f"Hourly eROAS by Distribution (Prod), Daily Budget = ${daily_budget / 100}")
 ax_prod.bar(hours, prod_eroas_hourly, color="seagreen", edgecolor="white")
 ax_prod.set_xticks(hours)
 ax_prod.set_xticklabels([f"{h:02d}h" for h in hours], rotation=45, ha="right", fontsize=8)
