@@ -8,7 +8,8 @@ plt.close("all")
 
 target_campaign_id = "0b76b55d-a017-4f77-a9a7-38fc41c90d2d"
 daily_budget = 42500 # in cent
-revenue_guardrail = 0.03
+revenue_guardrail = 0.00
+value_filtering_quantile = 0.95
 
 
 #%%
@@ -73,25 +74,25 @@ metrics = df["candidates"].apply(
 )
 df = pd.concat([df, metrics], axis=1)
 
-print(f"eROAS computed: {df['eROAS'].notna().sum():,} valid / {len(df):,} total auctions")
+print(f"ieROAS computed: {df['ieROAS'].notna().sum():,} valid / {len(df):,} total auctions")
 
 
 #%%
 
-q_levels = np.arange(0.0, 1.01, 0.05)
-quantile_levels = np.arange(0.05, 1.01, 0.05)
+q_levels = np.arange(0.0, 1.01, 0.01)
+quantile_levels = np.arange(0.01, 1.01, 0.01)
 
-eroas = df["ieROAS"].dropna()
+ieroas = df["ieROAS"].dropna()
 bqs = df["best_quality_score"].dropna()
 
-eroas_boundaries = eroas.quantile(q_levels).values
-eroas_quantile_values = eroas.quantile(quantile_levels)
+ieroas_boundaries = np.unique(ieroas.quantile(q_levels).values)
+ieroas_quantile_values = ieroas.quantile(quantile_levels)
 bqs_quantile_values = bqs.quantile(quantile_levels)
 
 # ── Figure 1: quantile vs value for eROAS and best_quality_score ────────────
 fig1, axes1 = plt.subplots(1, 2, figsize=(18, 5))
 
-axes1[0].plot(quantile_levels, eroas_quantile_values, marker="o", markersize=4, color="steelblue", linewidth=2)
+axes1[0].plot(quantile_levels, ieroas_quantile_values, marker="o", markersize=4, color="steelblue", linewidth=2)
 axes1[0].set_yscale("log")
 axes1[0].set_xlabel("Quantile")
 axes1[0].set_ylabel("ieROAS (log scale)")
@@ -99,7 +100,7 @@ axes1[0].set_title("ieROAS by Quantile (0.05 increments)")
 axes1[0].set_xticks(quantile_levels)
 axes1[0].set_xticklabels([f"{q:.2f}" for q in quantile_levels], rotation=45, ha="right", fontsize=7)
 axes1[0].grid(True, linestyle="--", alpha=0.5)
-for q, v in zip(quantile_levels, eroas_quantile_values):
+for q, v in zip(quantile_levels, ieroas_quantile_values):
     axes1[0].annotate(f"{v:.2f}", xy=(q, v), textcoords="offset points", xytext=(0, 6), ha="center", fontsize=6)
 
 axes1[1].plot(quantile_levels, bqs_quantile_values, marker="o", markersize=4, color="darkorange", linewidth=2)
@@ -118,13 +119,13 @@ fig1.show()
 
 # ── Figure 2: avg best_quality_score per eROAS quantile bucket ──────────────
 df_valid = df[df["ieROAS"].notna() & df["best_quality_score"].notna()].copy()
-df_valid["ieroas_bucket"] = pd.cut(
+df_valid["ieROAS_bucket"] = pd.cut(
     df_valid["ieROAS"],
-    bins=eroas_boundaries,
-    labels=[f"{v:.2f}" for v in eroas_quantile_values],
+    bins=np.unique(ieroas_boundaries),
+    labels=[f"{v:.2f}" for v in ieroas_boundaries[ieroas_boundaries > 0]],
     include_lowest=True,
 )
-avg_bqs = df_valid.groupby("ieroas_bucket", observed=True)["best_quality_score"].mean()
+avg_bqs = df_valid.groupby("ieROAS_bucket", observed=True)["best_quality_score"].mean()
 
 fig2, ax2 = plt.subplots(figsize=(14, 5))
 bars = ax2.bar(range(len(avg_bqs)), avg_bqs.values, color="steelblue", edgecolor="white")
@@ -144,13 +145,13 @@ fig2.show()
 
 # ── Figure 3: avg best_quality_score per eROAS quantile bucket ──────────────
 df_valid = df[df["ieROAS"].notna() & df["best_conversion_prob"].notna()].copy()
-df_valid["ieroas_bucket"] = pd.cut(
+df_valid["ieROAS_bucket"] = pd.cut(
     df_valid["ieROAS"],
-    bins=eroas_boundaries,
-    labels=[f"{v:.2f}" for v in eroas_quantile_values],
+    bins=np.unique(ieroas_boundaries),
+    labels=[f"{v:.2f}" for v in ieroas_boundaries[ieroas_boundaries > 0]],
     include_lowest=True,
 )
-avg_bqs = df_valid.groupby("ieroas_bucket", observed=True)["best_conversion_prob"].mean()
+avg_bqs = df_valid.groupby("ieROAS_bucket", observed=True)["best_conversion_prob"].mean()
 
 fig2, ax2 = plt.subplots(figsize=(14, 5))
 bars = ax2.bar(range(len(avg_bqs)), avg_bqs.values, color="steelblue", edgecolor="white")
@@ -167,3 +168,106 @@ for bar, v in zip(bars, avg_bqs.values):
 fig2.tight_layout()
 fig2.show()
 
+#%%
+
+
+# ── 3. Sort by eROAS descending ────────────────────────────────────────────────
+
+eroas_q95 = df["ieROAS"].quantile(value_filtering_quantile)
+epv_q95 = df["iepv"].quantile(value_filtering_quantile)
+
+df_ieroas_filtered = df[df["ieROAS"] <= eroas_q95].reset_index(drop=True)
+df_epv_filtered = df[df["iepv"] <= epv_q95].reset_index(drop=True)
+
+print(f"df_eroas_filtered: {len(df_ieroas_filtered):,} rows (removed {len(df) - len(df_ieroas_filtered):,})")
+
+
+#%%
+# ── 4. Collect best opportunities within daily budget ──────────────────────────
+df_ieroas_filtered = df_ieroas_filtered.sort_values("ieROAS", ascending=False, na_position="last").reset_index(drop=True)
+
+
+best_opportunities = []
+ad_spend = 0.0
+
+for _, row in df_ieroas_filtered.iterrows():
+    if pd.isna(row["ieROAS"]) or pd.isna(row["impression_cost"]):
+        continue
+    best_opportunities.append({
+        "occurred_at": row["occurred_at"],
+        "ieROAS": row["ieROAS"],
+        "impression_cost": row["impression_cost"],
+    })
+    ad_spend += row["impression_cost"]
+    if ad_spend > daily_budget:
+        break
+
+print(f"\nBest opportunities: {len(best_opportunities):,} auctions")
+print(f"Cumulative ad_spend: {ad_spend:.4f}  (budget: {daily_budget})")
+
+
+# ── 5. Distribute into 24 hourly buckets ──────────────────────────────────────
+
+hourly_buckets: dict[int, list] = {hour: [] for hour in range(24)}
+
+for opp in best_opportunities:
+    ts = opp["occurred_at"]
+    if pd.isna(ts):
+        continue
+    hourly_buckets[pd.Timestamp(ts).hour].append(opp)
+
+
+max_count = max(len(v) for v in hourly_buckets.values()) if hourly_buckets else 1
+bar_width = 50
+
+
+hours = list(range(24))
+eroas_counts = [len(hourly_buckets[h]) for h in hours]
+
+fig_e, axes_e = plt.subplots(1, 2, figsize=(16, 4), sharey=False)
+fig_e.suptitle("Hourly Distribution of Best ieROAS Opportunities")
+
+for ax, log in zip(axes_e, [False, True]):
+    ax.bar(hours, eroas_counts, color="steelblue", edgecolor="white")
+    ax.set_xticks(hours)
+    ax.set_xticklabels([f"{h:02d}h" for h in hours], rotation=45, ha="right", fontsize=8)
+    ax.set_xlabel("Hour")
+    ax.set_ylabel("Count (log scale)" if log else "Count")
+    ax.set_title("Log Scale" if log else "Original Scale")
+    ax.grid(True, axis="y", linestyle="--", alpha=0.5)
+    if log:
+        ax.set_yscale("log")
+    for i, v in enumerate(eroas_counts):
+        if v > 0:
+            ax.text(i, v * (1.05 if log else 1) + (0 if log else max(eroas_counts) * 0.01),
+                    str(v), ha="center", va="bottom", fontsize=6)
+
+fig_e.tight_layout()
+fig_e.show()
+
+# ── Figure: Hourly eROAS from best opportunities ───────────────────────────────
+
+def hourly_ieroas(buckets: dict) -> list:
+    result = []
+    for h in range(24):
+        opps = buckets[h]
+        total_cost = sum(o["impression_cost"] for o in opps)
+        total_epv  = sum(o["ieROAS"] * o["impression_cost"] for o in opps)
+        result.append(total_epv / total_cost if total_cost > 0 else 0.0)
+    return result
+
+eroas_hourly = hourly_ieroas(hourly_buckets)
+
+fig_er, ax_er = plt.subplots(figsize=(14, 4))
+fig_er.suptitle(f"Hourly ieROAS by Distribution (Best ieROAS Opportunities), Daily Budget = ${daily_budget / 100}")
+ax_er.bar(hours, eroas_hourly, color="steelblue", edgecolor="white")
+ax_er.set_xticks(hours)
+ax_er.set_xticklabels([f"{h:02d}h" for h in hours], rotation=45, ha="right", fontsize=8)
+ax_er.set_xlabel("Hour")
+ax_er.set_ylabel("ieROAS")
+ax_er.grid(True, axis="y", linestyle="--", alpha=0.5)
+for i, v in enumerate(eroas_hourly):
+    if v > 0:
+        ax_er.text(i, v + max(eroas_hourly) * 0.01, f"{v:.2f}", ha="center", va="bottom", fontsize=6)
+fig_er.tight_layout()
+fig_er.show()
