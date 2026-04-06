@@ -25,7 +25,7 @@ def compute_metrics(candidates: list, target_campaign_id: str) -> dict:
     # --- Target campaign entries ---
     target_entries = [c for c in candidates if c.get("campaignId") == target_campaign_id]
     if not target_entries:
-        return {"eROAS": np.nan, "impression_cost": np.nan, "best_quality_score": np.nan}
+        return {"eROAS": np.nan, "impression_cost": np.nan, "best_quality_score": np.nan, "winner_ddSic": np.nan}
 
     def iepv(c):
         return ((
@@ -43,7 +43,7 @@ def compute_metrics(candidates: list, target_campaign_id: str) -> dict:
     # --- Winner entry ---
     winner_entries = [c for c in candidates if c.get("auctionRank") == 0]
     if not winner_entries:
-        return {"eROAS": np.nan, "impression_cost": np.nan, "best_quality_score": best_quality_score}
+        return {"eROAS": np.nan, "impression_cost": np.nan, "best_quality_score": best_quality_score, "winner_ddSic": np.nan}
     winner = winner_entries[0]
 
     # --- eROAS ---
@@ -52,6 +52,7 @@ def compute_metrics(candidates: list, target_campaign_id: str) -> dict:
         pricing = winner.get("pricingMetadata") or {}
         impression_cost = pricing.get("nextAdScore", np.nan)
         ieroas = iepv(winner) / impression_cost if impression_cost and impression_cost > 0 else np.nan
+        winner_dd_sic = winner.get("ddSic", np.nan)
     else:
         # Target didn't win: impression_cost is the winner's adScore (cost to beat)
         impression_cost = winner.get("adScore", np.nan)
@@ -59,13 +60,16 @@ def compute_metrics(candidates: list, target_campaign_id: str) -> dict:
             ieroas = max(iepv(c) / impression_cost for c in target_entries)
         else:
             ieroas = np.nan
+        best_target_entry = max(target_entries, key=iepv)
+        winner_dd_sic = best_target_entry.get("ddSic", np.nan)
 
     return {
         "ieROAS": ieroas,
         "iePV": ieroas * impression_cost,
         "impression_cost": impression_cost,
         "best_quality_score": best_quality_score,
-        "best_conversion_prob": best_conversion_prob
+        "best_conversion_prob": best_conversion_prob,
+        "winner_ddSic": winner_dd_sic,
     }
 
 
@@ -374,3 +378,25 @@ for i, v in enumerate(epv_hourly):
 
 fig_epv.tight_layout()
 fig_epv.show()
+
+
+#%%
+# ── 6. Average ieROAS and iePV by winner ddSic ─────────────────────────────────
+
+df_sic = df_ieroas_filtered[df_ieroas_filtered["winner_ddSic"].notna()].copy()
+
+median_ieroas = df_sic[df_sic["ieROAS"] > 0]["ieROAS"].median()
+df_sic_above_median = df_sic[df_sic["ieROAS"] > median_ieroas]
+
+df_sic_pos = df_sic_above_median[df_sic_above_median["iePV"] > 0]
+grp = df_sic_pos.groupby("winner_ddSic")
+
+avg_by_sic = pd.DataFrame({
+    "avg_ieROAS":            grp["iePV"].sum() / grp["impression_cost"].sum(),
+    "avg_iePV":              grp["iePV"].mean(),
+    "total_impression_cost": df_sic_above_median.groupby("winner_ddSic")["impression_cost"].sum() / 100,
+    "total_eConversions":    df_sic_above_median.groupby("winner_ddSic")["best_conversion_prob"].sum(),
+})
+
+print(f"Median ieROAS: {median_ieroas:.4f}")
+print(avg_by_sic.sort_values("avg_ieROAS", ascending=False).to_string())
