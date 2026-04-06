@@ -306,3 +306,71 @@ for i, v in enumerate(eroas_hourly):
 
 fig_e.tight_layout()
 fig_e.show()
+
+
+#%%
+# ── 4. Collect best opportunities within daily budget (iePV) ───────────────────
+df_epv_filtered = df_epv_filtered.sort_values("iePV", ascending=False, na_position="last").reset_index(drop=True)
+
+best_opportunities_epv = []
+ad_spend_epv = 0.0
+
+for _, row in df_epv_filtered.iterrows():
+    if pd.isna(row["iePV"]) or pd.isna(row["impression_cost"]):
+        continue
+    best_opportunities_epv.append({
+        "occurred_at": row["occurred_at"],
+        "ieROAS": row["ieROAS"],
+        "iePV": row["iePV"],
+        "impression_cost": row["impression_cost"],
+    })
+    ad_spend_epv += row["impression_cost"]
+    if ad_spend_epv > daily_budget:
+        break
+
+print(f"\nBest opportunities (iePV): {len(best_opportunities_epv):,} auctions")
+print(f"Cumulative ad_spend: {ad_spend_epv:.4f}  (budget: {daily_budget})")
+
+
+# ── 5. Distribute into 24 hourly buckets (iePV) ────────────────────────────────
+
+hourly_buckets_epv: dict[int, list] = {hour: [] for hour in range(24)}
+
+for opp in best_opportunities_epv:
+    ts = opp["occurred_at"]
+    if pd.isna(ts):
+        continue
+    hourly_buckets_epv[pd.Timestamp(ts).hour].append(opp)
+
+epv_counts = [len(hourly_buckets_epv[h]) for h in hours]
+epv_hourly = hourly_ieroas(hourly_buckets_epv)
+
+fig_epv, axes_epv = plt.subplots(1, 2, figsize=(16, 4), sharey=False)
+fig_epv.suptitle("Hourly Distribution of Best iePV Opportunities")
+
+ax = axes_epv[0]
+ax.bar(hours, epv_counts, color="steelblue", edgecolor="white")
+ax.set_xticks(hours)
+ax.set_xticklabels([f"{h:02d}h" for h in hours], rotation=45, ha="right", fontsize=8)
+ax.set_xlabel("Hour")
+ax.set_ylabel("Count")
+ax.set_title("Original Scale")
+ax.grid(True, axis="y", linestyle="--", alpha=0.5)
+for i, v in enumerate(epv_counts):
+    if v > 0:
+        ax.text(i, v + max(epv_counts) * 0.01, str(v), ha="center", va="bottom", fontsize=6)
+
+ax = axes_epv[1]
+ax.bar(hours, epv_hourly, color="steelblue", edgecolor="white")
+ax.set_xticks(hours)
+ax.set_xticklabels([f"{h:02d}h" for h in hours], rotation=45, ha="right", fontsize=8)
+ax.set_xlabel("Hour")
+ax.set_ylabel("ieROAS")
+ax.set_title(f"Hourly ieROAS by Distribution (Best iePV Opportunities), Daily Budget = ${daily_budget / 100}")
+ax.grid(True, axis="y", linestyle="--", alpha=0.5)
+for i, v in enumerate(epv_hourly):
+    if v > 0:
+        ax.text(i, v + max(epv_hourly) * 0.01, f"{v:.2f}", ha="center", va="bottom", fontsize=6)
+
+fig_epv.tight_layout()
+fig_epv.show()
