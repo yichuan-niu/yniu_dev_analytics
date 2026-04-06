@@ -189,6 +189,12 @@ for bar, v in zip(bars, avg_bqs.values):
     ax2[0].text(bar.get_x() + bar.get_width() / 2, bar.get_height() + max(avg_bqs.values) * 0.01,
              f"{v:.4f}", ha="center", va="bottom", fontsize=6)
 
+df_valid["iePV_bucket"] = pd.cut(
+    df_valid["iePV"],
+    bins=np.unique(iepv_boundaries),
+    labels=[f"{v:.2f}" for v in iepv_boundaries[iepv_boundaries > 0]],
+    include_lowest=True,
+)
 avg_bqs = df_valid.groupby("iePV_bucket", observed=True)["best_conversion_prob"].mean()
 bars = ax2[1].bar(range(len(avg_bqs)), avg_bqs.values, color="steelblue", edgecolor="white")
 ax2[1].set_xticks(range(len(avg_bqs)))
@@ -260,29 +266,6 @@ bar_width = 50
 hours = list(range(24))
 eroas_counts = [len(hourly_buckets[h]) for h in hours]
 
-fig_e, axes_e = plt.subplots(1, 2, figsize=(16, 4), sharey=False)
-fig_e.suptitle("Hourly Distribution of Best ieROAS Opportunities")
-
-for ax, log in zip(axes_e, [False, True]):
-    ax.bar(hours, eroas_counts, color="steelblue", edgecolor="white")
-    ax.set_xticks(hours)
-    ax.set_xticklabels([f"{h:02d}h" for h in hours], rotation=45, ha="right", fontsize=8)
-    ax.set_xlabel("Hour")
-    ax.set_ylabel("Count (log scale)" if log else "Count")
-    ax.set_title("Log Scale" if log else "Original Scale")
-    ax.grid(True, axis="y", linestyle="--", alpha=0.5)
-    if log:
-        ax.set_yscale("log")
-    for i, v in enumerate(eroas_counts):
-        if v > 0:
-            ax.text(i, v * (1.05 if log else 1) + (0 if log else max(eroas_counts) * 0.01),
-                    str(v), ha="center", va="bottom", fontsize=6)
-
-fig_e.tight_layout()
-fig_e.show()
-
-# ── Figure: Hourly eROAS from best opportunities ───────────────────────────────
-
 def hourly_ieroas(buckets: dict) -> list:
     result = []
     for h in range(24):
@@ -294,16 +277,32 @@ def hourly_ieroas(buckets: dict) -> list:
 
 eroas_hourly = hourly_ieroas(hourly_buckets)
 
-fig_er, ax_er = plt.subplots(figsize=(14, 4))
-fig_er.suptitle(f"Hourly ieROAS by Distribution (Best ieROAS Opportunities), Daily Budget = ${daily_budget / 100}")
-ax_er.bar(hours, eroas_hourly, color="steelblue", edgecolor="white")
-ax_er.set_xticks(hours)
-ax_er.set_xticklabels([f"{h:02d}h" for h in hours], rotation=45, ha="right", fontsize=8)
-ax_er.set_xlabel("Hour")
-ax_er.set_ylabel("ieROAS")
-ax_er.grid(True, axis="y", linestyle="--", alpha=0.5)
+fig_e, axes_e = plt.subplots(1, 2, figsize=(16, 4), sharey=False)
+fig_e.suptitle("Hourly Distribution of Best ieROAS Opportunities")
+
+ax = axes_e[0]
+ax.bar(hours, eroas_counts, color="steelblue", edgecolor="white")
+ax.set_xticks(hours)
+ax.set_xticklabels([f"{h:02d}h" for h in hours], rotation=45, ha="right", fontsize=8)
+ax.set_xlabel("Hour")
+ax.set_ylabel("Count")
+ax.set_title("Original Scale")
+ax.grid(True, axis="y", linestyle="--", alpha=0.5)
+for i, v in enumerate(eroas_counts):
+    if v > 0:
+        ax.text(i, v + max(eroas_counts) * 0.01, str(v), ha="center", va="bottom", fontsize=6)
+
+ax = axes_e[1]
+ax.bar(hours, eroas_hourly, color="steelblue", edgecolor="white")
+ax.set_xticks(hours)
+ax.set_xticklabels([f"{h:02d}h" for h in hours], rotation=45, ha="right", fontsize=8)
+ax.set_xlabel("Hour")
+ax.set_ylabel("ieROAS")
+ax.set_title(f"Hourly ieROAS by Distribution (Best ieROAS Opportunities), Daily Budget = ${daily_budget / 100}")
+ax.grid(True, axis="y", linestyle="--", alpha=0.5)
 for i, v in enumerate(eroas_hourly):
     if v > 0:
-        ax_er.text(i, v + max(eroas_hourly) * 0.01, f"{v:.2f}", ha="center", va="bottom", fontsize=6)
-fig_er.tight_layout()
-fig_er.show()
+        ax.text(i, v + max(eroas_hourly) * 0.01, f"{v:.2f}", ha="center", va="bottom", fontsize=6)
+
+fig_e.tight_layout()
+fig_e.show()
