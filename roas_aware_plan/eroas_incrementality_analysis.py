@@ -385,8 +385,8 @@ fig_epv.show()
 
 df_sic = df_ieroas_filtered[df_ieroas_filtered["winner_ddSic"].notna()].copy()
 
-median_ieroas = df_sic[df_sic["ieROAS"] > 0]["ieROAS"].median()
-df_sic_above_median = df_sic[df_sic["ieROAS"] > median_ieroas]
+p90_ieroas = df_sic[df_sic["ieROAS"] > 0]["ieROAS"].quantile(0.90)
+df_sic_above_median = df_sic[df_sic["ieROAS"] > p90_ieroas]
 
 df_sic_pos = df_sic_above_median[df_sic_above_median["iePV"] > 0]
 grp = df_sic_pos.groupby("winner_ddSic")
@@ -398,5 +398,106 @@ avg_by_sic = pd.DataFrame({
     "total_eConversions":    df_sic_above_median.groupby("winner_ddSic")["best_conversion_prob"].sum(),
 })
 
-print(f"Median ieROAS: {median_ieroas:.4f}")
+print(f"P80 ieROAS: {p90_ieroas:.4f}")
 print(avg_by_sic.sort_values("avg_ieROAS", ascending=False).to_string())
+
+
+#%%
+# ── 7. Sensitivity: metrics vs ieROAS quantile threshold ───────────────────────
+
+quantile_thresholds = np.concatenate([np.arange(0.1, 1.0, 0.1), [0.925, 0.95, 0.975]])
+ieroas_pos = df_sic[df_sic["ieROAS"] > 0]["ieROAS"]
+
+records = []
+for q in quantile_thresholds:
+    threshold = ieroas_pos.quantile(q)
+    df_above = df_sic[df_sic["ieROAS"] > threshold]
+    df_above_pos = df_above[df_above["iePV"] > 0]
+    total_ipv = df_above_pos["iePV"].sum()
+    total_ic  = df_above_pos["impression_cost"].sum()
+    records.append({
+        "quantile":             q,
+        "avg_ieROAS":           total_ipv / total_ic if total_ic > 0 else np.nan,
+        "avg_iePV":             df_above_pos["iePV"].mean(),
+        "total_impression_cost": df_above["impression_cost"].sum() / 100,
+        "total_eConversions":   df_above["best_conversion_prob"].sum(),
+    })
+
+df_sensitivity = pd.DataFrame(records)
+
+fig_s, axes_s = plt.subplots(2, 2, figsize=(14, 8))
+fig_s.suptitle("Metrics vs ieROAS Quantile Threshold")
+
+q_labels = [f"P{q * 100:.4g}" for q in df_sensitivity["quantile"]]
+
+for ax, col, ylabel in zip(
+    axes_s.flat,
+    ["avg_ieROAS", "avg_iePV", "total_impression_cost", "total_eConversions"],
+    ["avg ieROAS", "avg iePV", "total impression cost ($)", "total eConversions"],
+):
+    ax.plot(q_labels, df_sensitivity[col], marker="o", color="steelblue", linewidth=2, markersize=5)
+    ax.set_xlabel("ieROAS Quantile Threshold")
+    ax.set_ylabel(ylabel)
+    ax.set_title(ylabel)
+    ax.grid(True, linestyle="--", alpha=0.5)
+    for x, y in zip(q_labels, df_sensitivity[col]):
+        if pd.notna(y):
+            ax.annotate(f"{y:.2f}", xy=(x, y), textcoords="offset points", xytext=(0, 6),
+                        ha="center", fontsize=7)
+
+fig_s.tight_layout()
+fig_s.show()
+
+
+#%%
+# ── 8. Per-ddSic sensitivity: metrics vs ieROAS quantile threshold ─────────────
+
+all_sics = sorted(df_sic["winner_ddSic"].dropna().unique())
+
+records_sic = []
+for sic in all_sics:
+    df_sic_one = df_sic[df_sic["winner_ddSic"] == sic]
+    ieroas_pos_sic = df_sic_one[df_sic_one["ieROAS"] > 0]["ieROAS"]
+    for q in quantile_thresholds:
+        threshold = ieroas_pos_sic.quantile(q)
+        df_above = df_sic_one[df_sic_one["ieROAS"] > threshold]
+        df_above_pos = df_above[df_above["iePV"] > 0]
+        total_ipv = df_above_pos["iePV"].sum()
+        total_ic  = df_above_pos["impression_cost"].sum()
+        records_sic.append({
+            "winner_ddSic":         sic,
+            "quantile":             q,
+            "avg_ieROAS":           total_ipv / total_ic if total_ic > 0 else np.nan,
+            "avg_iePV":             df_above_pos["iePV"].mean(),
+            "total_impression_cost": df_above["impression_cost"].sum() / 100,
+            "total_eConversions":   df_above["best_conversion_prob"].sum(),
+        })
+
+df_sensitivity_sic = pd.DataFrame(records_sic)
+
+metrics = [
+    ("avg_ieROAS",           "avg ieROAS"),
+    ("avg_iePV",             "avg iePV"),
+    ("total_impression_cost","total impression cost ($)"),
+    ("total_eConversions",   "total eConversions"),
+]
+
+colors = plt.cm.tab10.colors
+q_labels_all = [f"P{q * 100:.4g}" for q in quantile_thresholds]
+
+fig_ss, axes_ss = plt.subplots(2, 2, figsize=(16, 10))
+fig_ss.suptitle("Metrics vs ieROAS Quantile Threshold by ddSic")
+
+for ax, (col, ylabel) in zip(axes_ss.flat, metrics):
+    for i, sic in enumerate(all_sics):
+        df_s = df_sensitivity_sic[df_sensitivity_sic["winner_ddSic"] == sic]
+        ax.plot(q_labels_all, df_s[col].values, marker="o", color=colors[i % len(colors)],
+                linewidth=2, markersize=5, label=sic)
+    ax.set_xlabel("ieROAS Quantile Threshold")
+    ax.set_ylabel(ylabel)
+    ax.set_title(ylabel)
+    ax.grid(True, linestyle="--", alpha=0.5)
+    ax.legend(fontsize=7)
+
+fig_ss.tight_layout()
+fig_ss.show()
