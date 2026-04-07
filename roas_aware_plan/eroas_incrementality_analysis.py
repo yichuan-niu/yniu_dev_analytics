@@ -384,7 +384,7 @@ fig_epv.show()
 #%%
 # ── 6. Average ieROAS and iePV by winner ddSic ─────────────────────────────────
 
-df_sic = df_ieroas_filtered[df_ieroas_filtered["winner_ddSic"].notna()].copy()
+df_sic = df[df["winner_ddSic"].notna()].copy()
 
 p90_ieroas = df_sic[df_sic["ieROAS"] > 0]["ieROAS"].quantile(0.90)
 df_sic_above_median = df_sic[df_sic["ieROAS"] > p90_ieroas]
