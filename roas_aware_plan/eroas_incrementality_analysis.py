@@ -25,7 +25,7 @@ def compute_metrics(candidates: list, target_campaign_id: str) -> dict:
     # --- Target campaign entries ---
     target_entries = [c for c in candidates if c.get("campaignId") == target_campaign_id]
     if not target_entries:
-        return {"eROAS": np.nan, "impression_cost": np.nan, "best_quality_score": np.nan, "winner_ddSic": np.nan}
+        return {"ieROAS": np.nan, "iePV": np.nan, "impression_cost": np.nan, "best_quality_score": np.nan, "best_conversion_prob": np.nan, "winner_ddSic": np.nan, "is_target_campaign_winner": np.nan}
 
     def iepv(c):
         return ((
@@ -43,7 +43,7 @@ def compute_metrics(candidates: list, target_campaign_id: str) -> dict:
     # --- Winner entry ---
     winner_entries = [c for c in candidates if c.get("auctionRank") == 0]
     if not winner_entries:
-        return {"eROAS": np.nan, "impression_cost": np.nan, "best_quality_score": best_quality_score, "winner_ddSic": np.nan}
+        return {"ieROAS": np.nan, "iePV": np.nan, "impression_cost": np.nan, "best_quality_score": best_quality_score, "best_conversion_prob": best_conversion_prob, "winner_ddSic": np.nan, "is_target_campaign_winner": np.nan}
     winner = winner_entries[0]
 
     # --- eROAS ---
@@ -70,6 +70,7 @@ def compute_metrics(candidates: list, target_campaign_id: str) -> dict:
         "best_quality_score": best_quality_score,
         "best_conversion_prob": best_conversion_prob,
         "winner_ddSic": winner_dd_sic,
+        "is_target_campaign_winner": winner.get("campaignId") == target_campaign_id
     }
 
 
