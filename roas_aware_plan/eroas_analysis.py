@@ -623,3 +623,24 @@ for i, v in enumerate(prod_eroas_hourly):
         ax_prod.text(i, v + max(prod_eroas_hourly) * 0.01, f"{v:.2f}", ha="center", va="bottom", fontsize=6)
 fig_prod.tight_layout()
 fig_prod.show()
+
+
+#%%
+# ── Traffic share by hour ───────────────────────────────────────────────────────
+
+df_traffic = pd.read_csv(f"data/traffic_cmp_{target_campaign_id}_2026_03_21.csv")
+
+fig_tr, ax_tr = plt.subplots(figsize=(14, 4))
+fig_tr.suptitle("Hourly Traffic Share")
+ax_tr.bar(df_traffic["utc_hour"], df_traffic["hourly_traffic_share"], color="steelblue", edgecolor="white")
+ax_tr.set_xticks(df_traffic["utc_hour"])
+ax_tr.set_xticklabels([f"{h:02d}h" for h in df_traffic["utc_hour"]], rotation=45, ha="right", fontsize=8)
+ax_tr.set_xlabel("Hour of Day")
+ax_tr.set_ylabel("Hourly Traffic Share")
+ax_tr.grid(True, axis="y", linestyle="--", alpha=0.5)
+for _, row in df_traffic.iterrows():
+    if row["hourly_traffic_share"] > 0:
+        ax_tr.text(row["utc_h2our"], row["hourly_traffic_share"] + df_traffic["hourly_traffic_share"].max() * 0.01,
+                   f"{row['hourly_traffic_share']:.3f}", ha="center", va="bottom", fontsize=6)
+fig_tr.tight_layout()
+fig_tr.show()
