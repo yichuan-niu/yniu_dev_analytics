@@ -396,6 +396,7 @@ avg_by_sic = pd.DataFrame({
     "avg_ieROAS":            grp["iePV"].sum() / grp["impression_cost"].sum(),
     "avg_iePV":              grp["iePV"].mean(),
     "total_impression_cost": df_sic_above_median.groupby("winner_ddSic")["impression_cost"].sum() / 100,
+    "total_impressions":     df_sic_above_median.groupby("winner_ddSic").size(),
     "total_eConversions":    df_sic_above_median.groupby("winner_ddSic")["best_conversion_prob"].sum(),
 })
 
