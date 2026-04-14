@@ -24,7 +24,7 @@ def get_connection() -> snowflake.connector.SnowflakeConnection:
         user=os.environ["SNOWFLAKE_USER"],
         password=os.environ["SNOWFLAKE_PASSWORD"],
         account=os.environ["SNOWFLAKE_ACCOUNT"], 
-        warehouse="ADHOC",   
+        warehouse="TEAM_ADS_DEMAND_REPORTING_2XL",
         role=os.environ["SNOWFLAKE_ROLE"], 
         database=DATABASE,     
         schema=SCHEMA,   

@@ -34,5 +34,9 @@ SELECT
                           AND hard_reserve_dollars >= GREATEST(raw_gsp_dollars, soft_reserve_dollars)
                           AND cpc_dollars = hard_reserve_dollars THEN 1 ELSE 0 END)
         / COUNT(*), 2
-    )                                                                               AS opportunity_pct
+    )                                                                               AS opportunity_pct,
+    ROUND(
+        100.0 * SUM(cpc_dollars) / NULLIF(SUM(auction_bid_dollars), 0), 2
+    )                                                                               AS cpc_to_bid_pct
 FROM winners;
+
