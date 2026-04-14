@@ -84,3 +84,41 @@ SELECT
         100.0 * SUM(cpc_dollars) / NULLIF(SUM(auction_bid_dollars), 0), 2
     )                                                                               AS cpc_to_bid_pct
 FROM winners;
+
+
+-- Q03: Case 3 — Single-bidder auction, hard reserve is the sole price determinant
+-- Condition: finalAuctionSize = 1 (no competitors, GSP/soft reserve do not apply)
+--   AND cpc_dollars = hard_reserve_dollars (winner pays the hard reserve floor)
+--   AND auction_bid_dollars > hard_reserve_dollars (headroom to raise the floor)
+-- Interpretation: winner has no competitor, so hard reserve is the only binding
+-- price floor. Raising hard reserve directly increases CPC up to the winner's bid.
+
+WITH winners AS (
+    SELECT
+        auction_id,
+        auction_bid / 100.0                                                     AS auction_bid_dollars,
+        bid_price_unit_amount / 100.0                                           AS cpc_dollars,
+        GET(PARSE_JSON(pricing_metadata), 'hardReserve')::INT / 100.0          AS hard_reserve_dollars,
+        GET(PARSE_JSON(pricing_metadata), 'finalAuctionSize')::INT              AS final_auction_size
+    FROM edw.ads.ads_auction_candidates_event_delta
+    WHERE event_date = '2026-03-25'
+      AND placement LIKE '%SPONSORED_PRODUCTS%'
+      AND auction_rank = 0
+      AND pricing_metadata IS NOT NULL
+      AND GET(PARSE_JSON(pricing_metadata), 'finalAuctionSize')::INT = 1
+      AND MOD(ABS(HASH(auction_id)), 100) < 1
+)
+
+SELECT
+    COUNT(*)                                                                        AS total_auctions,
+    SUM(CASE WHEN auction_bid_dollars > hard_reserve_dollars
+              AND cpc_dollars = hard_reserve_dollars THEN 1 ELSE 0 END)            AS opportunity_auctions,
+    ROUND(
+        100.0 * SUM(CASE WHEN auction_bid_dollars > hard_reserve_dollars
+                          AND cpc_dollars = hard_reserve_dollars THEN 1 ELSE 0 END)
+        / COUNT(*), 2
+    )                                                                               AS opportunity_pct,
+    ROUND(
+        100.0 * SUM(cpc_dollars) / NULLIF(SUM(auction_bid_dollars), 0), 2
+    )                                                                               AS cpc_to_bid_pct
+FROM winners;
