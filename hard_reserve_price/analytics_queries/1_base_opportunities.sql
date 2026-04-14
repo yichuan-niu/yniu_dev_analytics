@@ -16,12 +16,13 @@ WITH winners AS (
         GET(PARSE_JSON(pricing_metadata), 'softReserveBeta')::FLOAT
             * GET(PARSE_JSON(pricing_metadata), 'nextBid')::INT / 100.0        AS soft_reserve_dollars,
         GET(PARSE_JSON(pricing_metadata), 'finalAuctionSize')::INT              AS final_auction_size
-    FROM edw.ads.ads_auction_candidates_event_delta SAMPLE (1)
+    FROM edw.ads.ads_auction_candidates_event_delta
     WHERE event_date = '2026-03-25'
       AND placement LIKE '%SPONSORED_PRODUCTS%'
       AND auction_rank = 0
       AND pricing_metadata IS NOT NULL
       AND GET(PARSE_JSON(pricing_metadata), 'finalAuctionSize')::INT > 1
+      AND MOD(ABS(HASH(auction_id)), 100) < 1
 )
 
 SELECT
@@ -59,12 +60,13 @@ WITH winners AS (
         GET(PARSE_JSON(pricing_metadata), 'softReserveBeta')::FLOAT
             * GET(PARSE_JSON(pricing_metadata), 'nextBid')::INT / 100.0        AS soft_reserve_dollars,
         GET(PARSE_JSON(pricing_metadata), 'finalAuctionSize')::INT              AS final_auction_size
-    FROM edw.ads.ads_auction_candidates_event_delta SAMPLE (1)
+    FROM edw.ads.ads_auction_candidates_event_delta
     WHERE event_date = '2026-03-25'
       AND placement LIKE '%SPONSORED_PRODUCTS%'
       AND auction_rank = 0
       AND pricing_metadata IS NOT NULL
       AND GET(PARSE_JSON(pricing_metadata), 'finalAuctionSize')::INT > 1
+      AND MOD(ABS(HASH(auction_id)), 100) < 1
 )
 
 SELECT
