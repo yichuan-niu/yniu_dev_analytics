@@ -21,23 +21,31 @@ WITH winners AS (
       AND placement LIKE '%SPONSORED_PRODUCTS%'
       AND auction_rank = 0
       AND pricing_metadata IS NOT NULL
-      AND GET(PARSE_JSON(pricing_metadata), 'finalAuctionSize')::INT > 1
       AND MOD(ABS(HASH(auction_id)), 100) < 1
 )
 
 SELECT
     COUNT(*)                                                                        AS total_auctions,
-    SUM(CASE WHEN auction_bid_dollars > hard_reserve_dollars
+    SUM(CASE WHEN final_auction_size > 1
+              AND auction_bid_dollars > hard_reserve_dollars
               AND hard_reserve_dollars >= GREATEST(raw_gsp_dollars, soft_reserve_dollars)
               AND cpc_dollars = hard_reserve_dollars THEN 1 ELSE 0 END)            AS opportunity_auctions,
     ROUND(
-        100.0 * SUM(CASE WHEN auction_bid_dollars > hard_reserve_dollars
+        100.0 * SUM(CASE WHEN final_auction_size > 1
+                          AND auction_bid_dollars > hard_reserve_dollars
                           AND hard_reserve_dollars >= GREATEST(raw_gsp_dollars, soft_reserve_dollars)
                           AND cpc_dollars = hard_reserve_dollars THEN 1 ELSE 0 END)
         / COUNT(*), 2
     )                                                                               AS opportunity_pct,
     ROUND(
-        100.0 * SUM(cpc_dollars) / NULLIF(SUM(auction_bid_dollars), 0), 2
+        100.0 * SUM(CASE WHEN final_auction_size > 1
+                          AND auction_bid_dollars > hard_reserve_dollars
+                          AND hard_reserve_dollars >= GREATEST(raw_gsp_dollars, soft_reserve_dollars)
+                          AND cpc_dollars = hard_reserve_dollars THEN cpc_dollars ELSE NULL END)
+        / NULLIF(SUM(CASE WHEN final_auction_size > 1
+                           AND auction_bid_dollars > hard_reserve_dollars
+                           AND hard_reserve_dollars >= GREATEST(raw_gsp_dollars, soft_reserve_dollars)
+                           AND cpc_dollars = hard_reserve_dollars THEN auction_bid_dollars ELSE NULL END), 0), 2
     )                                                                               AS cpc_to_bid_pct
 FROM winners;
 
@@ -65,23 +73,31 @@ WITH winners AS (
       AND placement LIKE '%SPONSORED_PRODUCTS%'
       AND auction_rank = 0
       AND pricing_metadata IS NOT NULL
-      AND GET(PARSE_JSON(pricing_metadata), 'finalAuctionSize')::INT > 1
       AND MOD(ABS(HASH(auction_id)), 100) < 1
 )
 
 SELECT
     COUNT(*)                                                                        AS total_auctions,
-    SUM(CASE WHEN auction_bid_dollars > GREATEST(raw_gsp_dollars, soft_reserve_dollars)
+    SUM(CASE WHEN final_auction_size > 1
+              AND auction_bid_dollars > GREATEST(raw_gsp_dollars, soft_reserve_dollars)
               AND GREATEST(raw_gsp_dollars, soft_reserve_dollars) > hard_reserve_dollars
               AND cpc_dollars = GREATEST(raw_gsp_dollars, soft_reserve_dollars) THEN 1 ELSE 0 END) AS opportunity_auctions,
     ROUND(
-        100.0 * SUM(CASE WHEN auction_bid_dollars > GREATEST(raw_gsp_dollars, soft_reserve_dollars)
+        100.0 * SUM(CASE WHEN final_auction_size > 1
+                          AND auction_bid_dollars > GREATEST(raw_gsp_dollars, soft_reserve_dollars)
                           AND GREATEST(raw_gsp_dollars, soft_reserve_dollars) > hard_reserve_dollars
                           AND cpc_dollars = GREATEST(raw_gsp_dollars, soft_reserve_dollars) THEN 1 ELSE 0 END)
         / COUNT(*), 2
     )                                                                               AS opportunity_pct,
     ROUND(
-        100.0 * SUM(cpc_dollars) / NULLIF(SUM(auction_bid_dollars), 0), 2
+        100.0 * SUM(CASE WHEN final_auction_size > 1
+                          AND auction_bid_dollars > GREATEST(raw_gsp_dollars, soft_reserve_dollars)
+                          AND GREATEST(raw_gsp_dollars, soft_reserve_dollars) > hard_reserve_dollars
+                          AND cpc_dollars = GREATEST(raw_gsp_dollars, soft_reserve_dollars) THEN cpc_dollars ELSE NULL END)
+        / NULLIF(SUM(CASE WHEN final_auction_size > 1
+                           AND auction_bid_dollars > GREATEST(raw_gsp_dollars, soft_reserve_dollars)
+                           AND GREATEST(raw_gsp_dollars, soft_reserve_dollars) > hard_reserve_dollars
+                           AND cpc_dollars = GREATEST(raw_gsp_dollars, soft_reserve_dollars) THEN auction_bid_dollars ELSE NULL END), 0), 2
     )                                                                               AS cpc_to_bid_pct
 FROM winners;
 
@@ -105,20 +121,26 @@ WITH winners AS (
       AND placement LIKE '%SPONSORED_PRODUCTS%'
       AND auction_rank = 0
       AND pricing_metadata IS NOT NULL
-      AND GET(PARSE_JSON(pricing_metadata), 'finalAuctionSize')::INT = 1
       AND MOD(ABS(HASH(auction_id)), 100) < 1
 )
 
 SELECT
     COUNT(*)                                                                        AS total_auctions,
-    SUM(CASE WHEN auction_bid_dollars > hard_reserve_dollars
+    SUM(CASE WHEN final_auction_size = 1
+              AND auction_bid_dollars > hard_reserve_dollars
               AND cpc_dollars = hard_reserve_dollars THEN 1 ELSE 0 END)            AS opportunity_auctions,
     ROUND(
-        100.0 * SUM(CASE WHEN auction_bid_dollars > hard_reserve_dollars
+        100.0 * SUM(CASE WHEN final_auction_size = 1
+                          AND auction_bid_dollars > hard_reserve_dollars
                           AND cpc_dollars = hard_reserve_dollars THEN 1 ELSE 0 END)
         / COUNT(*), 2
     )                                                                               AS opportunity_pct,
     ROUND(
-        100.0 * SUM(cpc_dollars) / NULLIF(SUM(auction_bid_dollars), 0), 2
+        100.0 * SUM(CASE WHEN final_auction_size = 1
+                          AND auction_bid_dollars > hard_reserve_dollars
+                          AND cpc_dollars = hard_reserve_dollars THEN cpc_dollars ELSE NULL END)
+        / NULLIF(SUM(CASE WHEN final_auction_size = 1
+                           AND auction_bid_dollars > hard_reserve_dollars
+                           AND cpc_dollars = hard_reserve_dollars THEN auction_bid_dollars ELSE NULL END), 0), 2
     )                                                                               AS cpc_to_bid_pct
 FROM winners;
