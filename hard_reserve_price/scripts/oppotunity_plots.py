@@ -93,7 +93,7 @@ def fetch_data(event_date: str = EVENT_DATE) -> pd.DataFrame:
 
 
 # ── Revenue lift computation ───────────────────────────────────────────────────
-def compute_revenue_lift_case1(df: pd.DataFrame, max_delta: float = 2.0) -> pd.DataFrame:
+def compute_revenue_lift_case1(df: pd.DataFrame, max_delta: float = 1.5) -> pd.DataFrame:
     """
     Case 1: hard reserve is already the binding floor.
       Per-auction uplift = min(delta, c1_headroom)
@@ -110,7 +110,7 @@ def compute_revenue_lift_case1(df: pd.DataFrame, max_delta: float = 2.0) -> pd.D
     return pd.DataFrame({"delta": deltas, "revenue_lift_pct": revenue_lift_pct})
 
 
-def compute_revenue_lift_case2(df: pd.DataFrame, max_delta: float = 2.0) -> pd.DataFrame:
+def compute_revenue_lift_case2(df: pd.DataFrame, max_delta: float = 1.5) -> pd.DataFrame:
     """
     Case 2: GREATEST(gsp, soft_reserve) is the binding floor above hard_reserve.
     For a given delta (hard reserve increment), per-auction uplift follows 3 conditions:
@@ -161,16 +161,16 @@ def plot_revenue_lift(
     ax.set_xlabel("Hard Reserve Increment (Δ, $)", fontsize=12)
     ax.set_ylabel("Revenue Lift (%)", fontsize=12)
     ax.set_title(f"Revenue Lift vs Hard Reserve Increment\n(SP winners, {event_date})", fontsize=13)
-    ax.set_xticks(np.arange(0, max_delta + 0.1, 0.1))
+    ax.set_xticks(np.arange(0, max_delta + 0.1, 0.2))
     ax.set_xlim(0, max_delta + 0.1)
     ax.set_ylim(bottom=0)
     ax.grid(axis="y", linestyle="--", alpha=0.4)
 
     plt.tight_layout()
+    plt.legend()
     plt.show()
 
 
-# ── Main ───────────────────────────────────────────────────────────────────────
 #%%
 print("Fetching data from Snowflake...")
 df = fetch_data()
@@ -180,7 +180,7 @@ print(f"  Case 2 opportunities: {df['c2_gap'].notna().sum():,}")
 print(f"  Total CPC ($):        {df['cpc_dollars'].sum():,.2f}")
 
 #%%
-max_delta = 1.5  # tunable: upper bound of hard reserve increment to explore
+max_delta = 5.0  # tunable: upper bound of hard reserve increment to explore
 results_c1 = compute_revenue_lift_case1(df, max_delta=max_delta)
 results_c2 = compute_revenue_lift_case2(df, max_delta=max_delta)
 plot_revenue_lift(results_c1, results_c2)
