@@ -23,14 +23,18 @@ def get_connection() -> snowflake.connector.SnowflakeConnection:
 
 
 # ── Query ──────────────────────────────────────────────────────────────────────
-# Single CTE covers both cases. NULLs indicate a row does not belong to that case.
+# Single CTE covers all three cases. NULLs indicate a row does not belong to that case.
 #
-# Case 1: hard_reserve is binding floor (hard_reserve >= GREATEST(gsp, sr))
+# Case 1: hard_reserve is binding floor, competitive auction (finalAuctionSize > 1)
 #   c1_headroom = bid - hard_reserve
 #
-# Case 2: GREATEST(gsp, sr) is binding floor (GREATEST(gsp, sr) > hard_reserve)
+# Case 2: GREATEST(gsp, sr) is binding floor (GREATEST(gsp, sr) > hard_reserve),
+#         competitive auction (finalAuctionSize > 1)
 #   c2_gap            = GREATEST(gsp, sr) - hard_reserve  (delta needed before any effect)
 #   c2_headroom       = bid - GREATEST(gsp, sr)           (room above competitive floor)
+#
+# Case 3: single-bidder auction (finalAuctionSize = 1), hard reserve is sole floor
+#   c3_headroom = bid - hard_reserve
 #
 # cpc_dollars is returned for every winner (denominator for revenue lift %)
 QUERY = """
@@ -41,40 +45,51 @@ WITH winners AS (
         GET(PARSE_JSON(pricing_metadata), 'cpcGsp')::INT / 100.0               AS raw_gsp_dollars,
         GET(PARSE_JSON(pricing_metadata), 'hardReserve')::INT / 100.0          AS hard_reserve_dollars,
         GET(PARSE_JSON(pricing_metadata), 'softReserveBeta')::FLOAT
-            * GET(PARSE_JSON(pricing_metadata), 'nextBid')::INT / 100.0        AS soft_reserve_dollars
+            * GET(PARSE_JSON(pricing_metadata), 'nextBid')::INT / 100.0        AS soft_reserve_dollars,
+        GET(PARSE_JSON(pricing_metadata), 'finalAuctionSize')::INT              AS final_auction_size
     FROM edw.ads.ads_auction_candidates_event_delta
     WHERE event_date = '{event_date}'
       AND placement LIKE '%SPONSORED_PRODUCTS%'
       AND auction_rank = 0
       AND pricing_metadata IS NOT NULL
-      AND GET(PARSE_JSON(pricing_metadata), 'finalAuctionSize')::INT > 1
       AND MOD(ABS(HASH(auction_id)), 100) < {sample_pct}
 )
 SELECT
     cpc_dollars,
-    -- Case 1: hard reserve is the binding floor
+    -- Case 1: hard reserve is the binding floor (competitive auction)
     CASE
-        WHEN hard_reserve_dollars >= GREATEST(raw_gsp_dollars, soft_reserve_dollars)
+        WHEN final_auction_size > 1
+         AND hard_reserve_dollars >= GREATEST(raw_gsp_dollars, soft_reserve_dollars)
          AND cpc_dollars = hard_reserve_dollars
          AND auction_bid_dollars > hard_reserve_dollars
         THEN auction_bid_dollars - hard_reserve_dollars
         ELSE NULL
     END                                                                         AS c1_headroom,
-    -- Case 2: GREATEST(gsp, soft_reserve) is the binding floor
+    -- Case 2: GREATEST(gsp, soft_reserve) is the binding floor (competitive auction)
     CASE
-        WHEN auction_bid_dollars > GREATEST(raw_gsp_dollars, soft_reserve_dollars)
+        WHEN final_auction_size > 1
+         AND auction_bid_dollars > GREATEST(raw_gsp_dollars, soft_reserve_dollars)
          AND GREATEST(raw_gsp_dollars, soft_reserve_dollars) > hard_reserve_dollars
          AND cpc_dollars = GREATEST(raw_gsp_dollars, soft_reserve_dollars)
         THEN GREATEST(raw_gsp_dollars, soft_reserve_dollars) - hard_reserve_dollars
         ELSE NULL
     END                                                                         AS c2_gap,
     CASE
-        WHEN auction_bid_dollars > GREATEST(raw_gsp_dollars, soft_reserve_dollars)
+        WHEN final_auction_size > 1
+         AND auction_bid_dollars > GREATEST(raw_gsp_dollars, soft_reserve_dollars)
          AND GREATEST(raw_gsp_dollars, soft_reserve_dollars) > hard_reserve_dollars
          AND cpc_dollars = GREATEST(raw_gsp_dollars, soft_reserve_dollars)
         THEN auction_bid_dollars - GREATEST(raw_gsp_dollars, soft_reserve_dollars)
         ELSE NULL
-    END                                                                         AS c2_headroom
+    END                                                                         AS c2_headroom,
+    -- Case 3: single-bidder auction, hard reserve is sole floor
+    CASE
+        WHEN final_auction_size = 1
+         AND cpc_dollars = hard_reserve_dollars
+         AND auction_bid_dollars > hard_reserve_dollars
+        THEN auction_bid_dollars - hard_reserve_dollars
+        ELSE NULL
+    END                                                                         AS c3_headroom
 FROM winners
 """
 
@@ -87,7 +102,7 @@ def fetch_data(event_date: str = EVENT_DATE) -> pd.DataFrame:
         columns = [col[0].lower() for col in cursor.description]
         rows = cursor.fetchall()
     df = pd.DataFrame(rows, columns=columns)
-    for col in ["cpc_dollars", "c1_headroom", "c2_gap", "c2_headroom"]:
+    for col in ["cpc_dollars", "c1_headroom", "c2_gap", "c2_headroom", "c3_headroom"]:
         df[col] = pd.to_numeric(df[col], errors="coerce")
     return df
 
@@ -143,10 +158,28 @@ def compute_revenue_lift_case2(df: pd.DataFrame, max_delta: float = 1.5) -> pd.D
     return pd.DataFrame({"delta": deltas, "revenue_lift_pct": revenue_lift_pct})
 
 
+def compute_revenue_lift_case3(df: pd.DataFrame, max_delta: float = 1.5) -> pd.DataFrame:
+    """
+    Case 3: single-bidder auction, hard reserve is the sole price floor.
+      Per-auction uplift = min(delta, c3_headroom)
+      revenue_lift_pct   = sum(min(delta, c3_headroom)) / total_cpc * 100
+    """
+    total_cpc = float(df["cpc_dollars"].sum())
+    headroom = df["c3_headroom"].dropna().astype(float).values
+
+    deltas = np.arange(0.0, max_delta + 0.1, 0.1)
+    revenue_lift_pct = [
+        np.minimum(headroom, delta).sum() / total_cpc * 100
+        for delta in deltas
+    ]
+    return pd.DataFrame({"delta": deltas, "revenue_lift_pct": revenue_lift_pct})
+
+
 # ── Plot ───────────────────────────────────────────────────────────────────────
 def plot_revenue_lift(
     results_c1: pd.DataFrame,
     results_c2: pd.DataFrame,
+    results_c3: pd.DataFrame,
     event_date: str = EVENT_DATE,
 ) -> None:
     max_delta = results_c1["delta"].max()
@@ -157,6 +190,8 @@ def plot_revenue_lift(
             color="steelblue", linewidth=2, label="Case 1: hard reserve is binding floor")
     ax.plot(results_c2["delta"], results_c2["revenue_lift_pct"],
             color="darkorange", linewidth=2, label="Case 2: GSP/soft reserve is binding floor")
+    ax.plot(results_c3["delta"], results_c3["revenue_lift_pct"],
+            color="seagreen", linewidth=2, label="Case 3: single-bidder, hard reserve is sole floor")
 
     ax.set_xlabel("Hard Reserve Increment (Δ, $)", fontsize=12)
     ax.set_ylabel("Revenue Lift (%)", fontsize=12)
@@ -171,16 +206,19 @@ def plot_revenue_lift(
     plt.show()
 
 
+# ── Main ───────────────────────────────────────────────────────────────────────
 #%%
 print("Fetching data from Snowflake...")
 df = fetch_data()
 print(f"  Total winners:        {len(df):,}")
 print(f"  Case 1 opportunities: {df['c1_headroom'].notna().sum():,}")
 print(f"  Case 2 opportunities: {df['c2_gap'].notna().sum():,}")
+print(f"  Case 3 opportunities: {df['c3_headroom'].notna().sum():,}")
 print(f"  Total CPC ($):        {df['cpc_dollars'].sum():,.2f}")
 
 #%%
 max_delta = 5.0  # tunable: upper bound of hard reserve increment to explore
 results_c1 = compute_revenue_lift_case1(df, max_delta=max_delta)
 results_c2 = compute_revenue_lift_case2(df, max_delta=max_delta)
-plot_revenue_lift(results_c1, results_c2)
+results_c3 = compute_revenue_lift_case3(df, max_delta=max_delta)
+plot_revenue_lift(results_c1, results_c2, results_c3)
