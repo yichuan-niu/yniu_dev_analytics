@@ -187,11 +187,11 @@ def plot_revenue_lift(
     fig, ax = plt.subplots(figsize=(9, 5))
 
     ax.plot(results_c1["delta"], results_c1["revenue_lift_pct"],
-            color="steelblue", linewidth=2, label="Case 1: hard reserve is binding floor")
+            color="steelblue", linewidth=3, label="Case 1: hard reserve is binding floor")
     ax.plot(results_c2["delta"], results_c2["revenue_lift_pct"],
-            color="darkorange", linewidth=2, label="Case 2: GSP/soft reserve is binding floor")
+            color="darkorange", linewidth=3, label="Case 2: GSP/soft reserve is binding floor")
     ax.plot(results_c3["delta"], results_c3["revenue_lift_pct"],
-            color="seagreen", linewidth=2, label="Case 3: single-bidder, hard reserve is sole floor")
+            color="seagreen", linewidth=3, label="Case 3: single-bidder, hard reserve is sole floor")
 
     ax.set_xlabel("Hard Reserve Increment (Δ, $)", fontsize=12)
     ax.set_ylabel("Revenue Lift (%)", fontsize=12)
@@ -199,6 +199,10 @@ def plot_revenue_lift(
     ax.set_xticks(np.arange(0, max_delta + 0.1, 0.2))
     ax.set_xlim(0, max_delta + 0.1)
     ax.set_ylim(bottom=0)
+    y_max = max(results_c1["revenue_lift_pct"].max(),
+                results_c2["revenue_lift_pct"].max(),
+                results_c3["revenue_lift_pct"].max())
+    ax.set_yticks(np.arange(0, y_max + 2, 2))
     ax.grid(axis="y", linestyle="--", alpha=0.4)
 
     plt.tight_layout()
