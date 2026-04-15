@@ -30,5 +30,4 @@ ax.legend()
 
 fig.suptitle("Gamma vs Lognormal Distributions", fontsize=14, fontweight="bold")
 plt.tight_layout()
-plt.savefig("gamm_vs_lognormal.png", dpi=150)
 plt.show()
