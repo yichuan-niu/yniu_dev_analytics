@@ -57,6 +57,7 @@ WITH candidates AS (
         placement
     FROM edw.ads.ads_auction_candidates_event_delta
     WHERE event_date = '{event_date}'
+      AND CURRENCY_ISO_TYPE in ('USD')
       AND placement IN ({placements})
       AND pricing_metadata IS NOT NULL
       AND auction_rank < 5
