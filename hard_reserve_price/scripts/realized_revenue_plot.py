@@ -8,6 +8,12 @@ import snowflake.connector
 EVENT_DATE = "2026-03-25"
 SAMPLE_PCT = 1   # SAMPLE (1) — consistent with base query
 
+# ROAS filter: only raise hard reserve for campaigns with ROAS >= MIN_ROAS
+MIN_ROAS = 3.0
+ROAS_SNAPSHOT_START = "2026-03-19"
+ROAS_SNAPSHOT_END   = "2026-03-25"
+
+MAX_RESERVE_INCREMENT = 5.0  # tunable: upper bound of hard reserve increment to explore
 
 # ── Snowflake connection ───────────────────────────────────────────────────────
 def get_connection() -> snowflake.connector.SnowflakeConnection:
@@ -44,6 +50,7 @@ QUERY = """
 WITH winners AS (
     SELECT
         auction_id,
+        campaign_id,
         auction_bid / 100.0                                                     AS auction_bid_dollars,
         bid_price_unit_amount / 100.0                                           AS cpc_dollars,
         GET(PARSE_JSON(pricing_metadata), 'cpcGsp')::INT / 100.0               AS raw_gsp_dollars,
@@ -69,6 +76,7 @@ clicked AS (
       AND campaign_id IS NOT NULL
 )
 SELECT
+    winners.campaign_id,
     cpc_dollars,
     -- Case 1: hard reserve is the binding floor (competitive auction)
     CASE
@@ -122,15 +130,61 @@ def fetch_data(event_date: str = EVENT_DATE) -> pd.DataFrame:
     return df
 
 
+# ── ROAS query ─────────────────────────────────────────────────────────────────
+ROAS_QUERY = """
+SELECT
+    CAMPAIGN_ID,
+    ROUND(SUM(TOTAL_CX_SALES_AMOUNT_LOCAL) / 100.0, 2)      AS total_attributed_sales_usd,
+    ROUND(
+        SUM(TOTAL_CX_SALES_AMOUNT_LOCAL)
+        / NULLIF(SUM(TOTAL_CX_AD_FEE_LOCAL), 0),
+        2
+    )                                                         AS roas
+FROM EDW.ADS.FACT_CPG_CPC_CAMPAIGN_PERFORMANCE
+WHERE SNAPSHOT_DATE BETWEEN '{start_date}' AND '{end_date}'
+  AND TIMEZONE_TYPE = 'utc'
+  AND REPORT_TYPE   = '[brand_cohorts] campaign'
+  -- AND ADS_ENTITY_TYPE   = 'campaign'                                                                                  
+  -- AND CAMPAIGN_VERTICAL = 'ENTERPRISE_CPG'    
+GROUP BY CAMPAIGN_ID
+HAVING SUM(TOTAL_CX_AD_FEE_LOCAL) > 0
+ORDER BY 1
+"""
+
+
+def fetch_roas(
+    start_date: str = ROAS_SNAPSHOT_START,
+    end_date: str = ROAS_SNAPSHOT_END,
+) -> pd.DataFrame:
+    """Return a DataFrame with columns [campaign_id, total_attributed_sales_usd, roas]."""
+    query = ROAS_QUERY.format(start_date=start_date, end_date=end_date)
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute(query)
+        columns = [col[0].lower() for col in cursor.description]
+        rows = cursor.fetchall()
+    df = pd.DataFrame(rows, columns=columns)
+    df["roas"] = pd.to_numeric(df["roas"], errors="coerce")
+    return df
+
+
 # ── Revenue lift computation ───────────────────────────────────────────────────
-def compute_revenue_lift_case1(df: pd.DataFrame, max_delta: float = 1.5) -> pd.DataFrame:
+def compute_revenue_lift_case1(
+    df: pd.DataFrame, max_delta: float = 1.5, high_roas_ids: set = None
+) -> pd.DataFrame:
     """
     Case 1: hard reserve is already the binding floor.
       Per-auction uplift = min(delta, c1_headroom)
       revenue_lift_pct   = sum(min(delta, c1_headroom)) / total_cpc * 100
+
+    total_cpc is computed over all clicked winners (unchanged denominator).
+    Headroom is restricted to high_roas_ids campaigns when provided.
     """
     total_cpc = float(df["cpc_dollars"].sum())
-    headroom = df["c1_headroom"].dropna().astype(float).values
+    mask = df["c1_headroom"].notna()
+    if high_roas_ids is not None:
+        mask = mask & df["campaign_id"].isin(high_roas_ids)
+    headroom = df.loc[mask, "c1_headroom"].astype(float).values
 
     deltas = np.arange(0.0, max_delta + 0.1, 0.1)
     revenue_lift_pct = [
@@ -140,7 +194,9 @@ def compute_revenue_lift_case1(df: pd.DataFrame, max_delta: float = 1.5) -> pd.D
     return pd.DataFrame({"delta": deltas, "revenue_lift_pct": revenue_lift_pct})
 
 
-def compute_revenue_lift_case2(df: pd.DataFrame, max_delta: float = 1.5) -> pd.DataFrame:
+def compute_revenue_lift_case2(
+    df: pd.DataFrame, max_delta: float = 1.5, high_roas_ids: set = None
+) -> pd.DataFrame:
     """
     Case 2: GREATEST(gsp, soft_reserve) is the binding floor above hard_reserve.
     For a given delta (hard reserve increment), per-auction uplift follows 3 conditions:
@@ -153,9 +209,15 @@ def compute_revenue_lift_case2(df: pd.DataFrame, max_delta: float = 1.5) -> pd.D
     where:
       gap         = gsp_floor - hard_reserve  (increment needed before any effect)
       c2_headroom = auction_bid - gsp_floor   (max possible uplift per auction)
+
+    total_cpc is computed over all clicked winners (unchanged denominator).
+    gap/headroom arrays are restricted to high_roas_ids campaigns when provided.
     """
     total_cpc = float(df["cpc_dollars"].sum())
-    case2 = df[df["c2_gap"].notna()].copy()
+    mask = df["c2_gap"].notna()
+    if high_roas_ids is not None:
+        mask = mask & df["campaign_id"].isin(high_roas_ids)
+    case2 = df[mask].copy()
     gap = case2["c2_gap"].astype(float).values
     headroom = case2["c2_headroom"].astype(float).values
 
@@ -173,14 +235,22 @@ def compute_revenue_lift_case2(df: pd.DataFrame, max_delta: float = 1.5) -> pd.D
     return pd.DataFrame({"delta": deltas, "revenue_lift_pct": revenue_lift_pct})
 
 
-def compute_revenue_lift_case3(df: pd.DataFrame, max_delta: float = 1.5) -> pd.DataFrame:
+def compute_revenue_lift_case3(
+    df: pd.DataFrame, max_delta: float = 1.5, high_roas_ids: set = None
+) -> pd.DataFrame:
     """
     Case 3: single-bidder auction, hard reserve is the sole price floor.
       Per-auction uplift = min(delta, c3_headroom)
       revenue_lift_pct   = sum(min(delta, c3_headroom)) / total_cpc * 100
+
+    total_cpc is computed over all clicked winners (unchanged denominator).
+    Headroom is restricted to high_roas_ids campaigns when provided.
     """
     total_cpc = float(df["cpc_dollars"].sum())
-    headroom = df["c3_headroom"].dropna().astype(float).values
+    mask = df["c3_headroom"].notna()
+    if high_roas_ids is not None:
+        mask = mask & df["campaign_id"].isin(high_roas_ids)
+    headroom = df.loc[mask, "c3_headroom"].astype(float).values
 
     deltas = np.arange(0.0, max_delta + 0.1, 0.1)
     revenue_lift_pct = [
@@ -227,7 +297,7 @@ def plot_revenue_lift(
 
 # ── Main ───────────────────────────────────────────────────────────────────────
 #%%
-print("Fetching data from Snowflake (clicked winners only)...")
+print("Fetching auction data from Snowflake (clicked winners only)...")
 df = fetch_data()
 print(f"  Total clicked winners: {len(df):,}")
 print(f"  Case 1 opportunities:  {df['c1_headroom'].notna().sum():,}")
@@ -236,8 +306,16 @@ print(f"  Case 3 opportunities:  {df['c3_headroom'].notna().sum():,}")
 print(f"  Total CPC ($):         {df['cpc_dollars'].sum():,.2f}")
 
 #%%
-max_delta = 5.0  # tunable: upper bound of hard reserve increment to explore
-results_c1 = compute_revenue_lift_case1(df, max_delta=max_delta)
-results_c2 = compute_revenue_lift_case2(df, max_delta=max_delta)
-results_c3 = compute_revenue_lift_case3(df, max_delta=max_delta)
+print(f"\nFetching ROAS data ({ROAS_SNAPSHOT_START} – {ROAS_SNAPSHOT_END})...")
+roas_df = fetch_roas()
+high_roas_ids = set(roas_df.loc[roas_df["roas"] >= MIN_ROAS, "campaign_id"])
+print(f"  Campaigns with ROAS >= {MIN_ROAS}: {len(high_roas_ids):,} / {len(roas_df):,}")
+n_high_roas = df["campaign_id"].isin(high_roas_ids).sum()
+print(f"  Clicked-winner rows in high-ROAS campaigns: {n_high_roas:,} / {len(df):,}")
+
+#%%
+
+results_c1 = compute_revenue_lift_case1(df, max_delta=MAX_RESERVE_INCREMENT, high_roas_ids=high_roas_ids)
+results_c2 = compute_revenue_lift_case2(df, max_delta=MAX_RESERVE_INCREMENT, high_roas_ids=high_roas_ids)
+results_c3 = compute_revenue_lift_case3(df, max_delta=MAX_RESERVE_INCREMENT, high_roas_ids=high_roas_ids)
 plot_revenue_lift(results_c1, results_c2, results_c3)
