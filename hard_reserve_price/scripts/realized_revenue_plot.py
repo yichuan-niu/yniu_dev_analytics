@@ -3,13 +3,14 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 import snowflake.connector
+plt.close("all")
 
 # ── Constants ──────────────────────────────────────────────────────────────────
 EVENT_DATE = "2026-03-25"
 SAMPLE_PCT = 1   # SAMPLE (1) — consistent with base query
 
-# ROAS filter: only raise hard reserve for campaigns with ROAS >= MIN_ROAS
-MIN_ROAS = 3.0
+# ROAS thresholds to sweep: one plot per threshold
+ROAS_THRESHOLDS = [0, 2, 4, 6, 8]
 ROAS_SNAPSHOT_START = "2026-03-19"
 ROAS_SNAPSHOT_END   = "2026-03-25"
 
@@ -297,30 +298,27 @@ def compute_revenue_lift_budget_aware(
 # ── Plot ───────────────────────────────────────────────────────────────────────
 def plot_revenue_lift(
     results: pd.DataFrame,
+    ax: plt.Axes,
+    min_roas: float,
     event_date: str = EVENT_DATE,
 ) -> None:
     """
     results: DataFrame with columns delta, c1_lift_pct, c2_lift_pct, c3_lift_pct.
+    Draws into the provided Axes object.
     """
     max_delta = results["delta"].max()
-    plt.close("all")
-    fig, ax = plt.subplots(figsize=(9, 5))
 
     ax.plot(results["delta"], results["c1_lift_pct"],
-            color="steelblue", linewidth=3, label="Case 1: hard reserve is binding floor")
+            color="steelblue", linewidth=2, label="Case 1: hard reserve is binding floor")
     ax.plot(results["delta"], results["c2_lift_pct"],
-            color="darkorange", linewidth=3, label="Case 2: GSP/soft reserve is binding floor")
+            color="darkorange", linewidth=2, label="Case 2: GSP/soft reserve is binding floor")
     ax.plot(results["delta"], results["c3_lift_pct"],
-            color="seagreen", linewidth=3, label="Case 3: single-bidder, hard reserve is sole floor")
+            color="seagreen", linewidth=2, label="Case 3: single-bidder, hard reserve is sole floor")
 
-    ax.set_xlabel("Hard Reserve Increment (Δ, $)", fontsize=12)
-    ax.set_ylabel("Realized Revenue Lift (%)", fontsize=12)
-    ax.set_title(
-        f"Realized Revenue Lift vs Hard Reserve Increment\n"
-        f"(SP clicked winners, budget-aware, {event_date})",
-        fontsize=13,
-    )
-    ax.set_xticks(np.arange(0, max_delta + 0.1, 0.2))
+    ax.set_xlabel("Hard Reserve Increment (Δ, $)", fontsize=10)
+    ax.set_ylabel("Realized Revenue Lift (%)", fontsize=10)
+    ax.set_title(f"ROAS ≥ {min_roas}", fontsize=11)
+    ax.set_xticks(np.arange(0, max_delta + 0.1, 0.5))
     ax.set_xlim(0, max_delta + 0.1)
     ax.set_ylim(bottom=0)
     y_max = max(
@@ -330,10 +328,7 @@ def plot_revenue_lift(
     )
     ax.set_yticks(np.arange(0, y_max + 2, 2))
     ax.grid(axis="y", linestyle="--", alpha=0.4)
-
-    plt.tight_layout()
-    plt.legend()
-    plt.show()
+    ax.legend(fontsize=8)
 
 
 # ── Main ───────────────────────────────────────────────────────────────────────
@@ -349,23 +344,33 @@ print(f"  Total CPC ($):         {df['cpc_dollars'].sum():,.2f}")
 #%%
 print(f"\nFetching ROAS data ({ROAS_SNAPSHOT_START} – {ROAS_SNAPSHOT_END})...")
 roas_df = fetch_roas()
-high_roas_ids = set(roas_df.loc[roas_df["roas"] >= MIN_ROAS, "campaign_id"])
-print(f"  Campaigns with ROAS >= {MIN_ROAS}: {len(high_roas_ids):,} / {len(roas_df):,}")
-n_high_roas = df["campaign_id"].isin(high_roas_ids).sum()
-print(f"  Clicked-winner rows in high-ROAS campaigns: {n_high_roas:,} / {len(df):,}")
+print(f"  Total campaigns with ROAS data: {len(roas_df):,}")
 
 #%%
 print(f"\nFetching campaign daily budgets for {BUDGET_DATE}...")
 budget_map = fetch_budget()
 print(f"  Campaigns with known budget: {len(budget_map):,}")
-eligible = df["campaign_id"].isin(budget_map) & df["campaign_id"].isin(high_roas_ids)
-print(f"  Clicked-winner rows eligible (high-ROAS + budget known): {eligible.sum():,} / {len(df):,}")
 
 #%%
-results = compute_revenue_lift_budget_aware(
-    df,
-    budget_map=budget_map,
-    max_delta=MAX_RESERVE_INCREMENT,
-    high_roas_ids=high_roas_ids,
+fig, axes = plt.subplots(2, 2, figsize=(16, 10))
+fig.suptitle(
+    f"Realized Revenue Lift vs Hard Reserve Increment\n"
+    f"(SP clicked winners, budget-aware, {EVENT_DATE})",
+    fontsize=13,
 )
-plot_revenue_lift(results)
+
+for ax, min_roas in zip(axes.flat, ROAS_THRESHOLDS):
+    high_roas_ids = set(roas_df.loc[roas_df["roas"] >= min_roas, "campaign_id"])
+    eligible = df["campaign_id"].isin(budget_map) & df["campaign_id"].isin(high_roas_ids)
+    print(f"\n  ROAS >= {min_roas}: {len(high_roas_ids):,} campaigns, "
+          f"{eligible.sum():,} / {len(df):,} eligible clicked-winner rows")
+    results = compute_revenue_lift_budget_aware(
+        df,
+        budget_map=budget_map,
+        max_delta=MAX_RESERVE_INCREMENT,
+        high_roas_ids=high_roas_ids,
+    )
+    plot_revenue_lift(results, ax=ax, min_roas=min_roas)
+
+plt.tight_layout()
+plt.show()
