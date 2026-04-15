@@ -65,6 +65,8 @@ clicked AS (
     WHERE event_date = '{event_date}'
       AND is_sponsored = 1
       AND is_cpc = 1
+      AND ad_auction_id IS NOT NULL
+      AND campaign_id IS NOT NULL
 )
 SELECT
     cpc_dollars,

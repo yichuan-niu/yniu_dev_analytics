@@ -17,7 +17,8 @@ SELECT
 FROM edw.ads.ads_auction_candidates_event_delta SAMPLE (1)
 WHERE event_date = '2026-03-25'
   AND event_hour = 12
-  and placement like '%SPONSORED_PRODUCTS%';
+  and placement like '%SPONSORED_PRODUCTS%'
+;
 
 
 
@@ -25,4 +26,5 @@ SELECT
     count(distinct auction_id)
 FROM edw.ads.ads_auction_candidates_event_delta SAMPLE (1)
 WHERE event_date = '2026-03-25'
-  and placement like '%SPONSORED_PRODUCTS%';
+  and placement like '%SPONSORED_PRODUCTS%'
+;

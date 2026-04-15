@@ -47,7 +47,8 @@ SELECT
                            AND hard_reserve_dollars >= GREATEST(raw_gsp_dollars, soft_reserve_dollars)
                            AND cpc_dollars = hard_reserve_dollars THEN auction_bid_dollars ELSE NULL END), 0), 2
     )                                                                               AS cpc_to_bid_pct
-FROM winners;
+FROM winners
+;
 
 
 -- Q02: Case 2 — GSP/soft reserve is the binding floor (above hard reserve)
@@ -99,7 +100,8 @@ SELECT
                            AND GREATEST(raw_gsp_dollars, soft_reserve_dollars) > hard_reserve_dollars
                            AND cpc_dollars = GREATEST(raw_gsp_dollars, soft_reserve_dollars) THEN auction_bid_dollars ELSE NULL END), 0), 2
     )                                                                               AS cpc_to_bid_pct
-FROM winners;
+FROM winners
+;
 
 
 -- Q03: Case 3 — Single-bidder auction, hard reserve is the sole price determinant
@@ -143,4 +145,5 @@ SELECT
                            AND auction_bid_dollars > hard_reserve_dollars
                            AND cpc_dollars = hard_reserve_dollars THEN auction_bid_dollars ELSE NULL END), 0), 2
     )                                                                               AS cpc_to_bid_pct
-FROM winners;
+FROM winners
+;
