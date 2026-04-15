@@ -120,6 +120,7 @@ def get_subset(df: pd.DataFrame, plot_idx: int) -> pd.Series:
 
 # ── Plot helper ────────────────────────────────────────────────────────────────
 def plot_histogram(ax: plt.Axes, bids: pd.Series, title: str) -> None:
+    import numpy as np
     bids = bids.dropna()
     cap = bids.quantile(0.99)          # clip top 1% outliers for readability
     bids_clipped = bids[bids <= cap]
@@ -128,7 +129,15 @@ def plot_histogram(ax: plt.Axes, bids: pd.Series, title: str) -> None:
     ax.set_title(title, fontsize=8.5)
     ax.set_xlabel("Auction Bid ($)", fontsize=8)
     ax.set_ylabel("Count", fontsize=8)
-    ax.tick_params(labelsize=7)
+
+    # Dense ticks below $1 (every $0.10) to show the hard reserve floor clearly;
+    # coarser ticks above $1.
+    sub_dollar = np.arange(0, 1.0, 0.20)
+    above_dollar = np.arange(1.0, cap + 0.5, max(0.5, round((cap - 1.0) / 8, 1)))
+    xticks = np.unique(np.concatenate([sub_dollar, above_dollar]))
+    ax.set_xticks(xticks[xticks <= cap])
+    ax.tick_params(axis="x", labelsize=6, rotation=45)
+    ax.tick_params(axis="y", labelsize=7)
     ax.text(0.97, 0.96, f"n={len(bids):,}\np99 cap=${cap:.2f}",
             transform=ax.transAxes, fontsize=6.5, ha="right", va="top",
             color="dimgray")
