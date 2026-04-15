@@ -10,7 +10,7 @@ EVENT_DATE = "2026-03-25"
 SAMPLE_PCT = 1   # SAMPLE (1) — consistent with base query
 
 # ROAS thresholds to sweep: one plot per threshold
-ROAS_THRESHOLDS = [0, 2, 4, 6, 8]
+ROAS_THRESHOLDS = [0, 2, 4, 6, 8, 10]
 ROAS_SNAPSHOT_START = "2026-03-19"
 ROAS_SNAPSHOT_END   = "2026-03-25"
 
@@ -326,7 +326,13 @@ def plot_revenue_lift(
         results["c2_lift_pct"].max(),
         results["c3_lift_pct"].max(),
     )
-    ax.set_yticks(np.arange(0, y_max + 2, 2))
+    if min_roas >= 8:
+        y_step = 0.2
+    elif min_roas >= 6:
+        y_step = 1.0
+    else:
+        y_step = 2.0
+    ax.set_yticks(np.arange(0, y_max + y_step, y_step))
     ax.grid(axis="y", linestyle="--", alpha=0.4)
     ax.legend(fontsize=8)
 
@@ -352,7 +358,7 @@ budget_map = fetch_budget()
 print(f"  Campaigns with known budget: {len(budget_map):,}")
 
 #%%
-fig, axes = plt.subplots(2, 2, figsize=(16, 10))
+fig, axes = plt.subplots(3, 2, figsize=(10, 22))
 fig.suptitle(
     f"Realized Revenue Lift vs Hard Reserve Increment\n"
     f"(SP clicked winners, budget-aware, {EVENT_DATE})",
