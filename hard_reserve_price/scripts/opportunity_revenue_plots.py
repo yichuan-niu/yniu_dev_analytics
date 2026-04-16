@@ -49,6 +49,7 @@ WITH winners AS (
         GET(PARSE_JSON(pricing_metadata), 'finalAuctionSize')::INT              AS final_auction_size
     FROM edw.ads.ads_auction_candidates_event_delta
     WHERE event_date = '{event_date}'
+      AND CURRENCY_ISO_TYPE in ('USD')
       AND placement LIKE '%SPONSORED_PRODUCTS%'
       AND auction_rank = 0
       AND pricing_metadata IS NOT NULL
