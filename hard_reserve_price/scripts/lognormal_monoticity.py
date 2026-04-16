@@ -111,7 +111,7 @@ ax = axes2[0]
 ax.plot(v_plot, v_plot, color="steelblue", lw=2)
 ax.set_xlabel("v")
 ax.set_ylabel("y")
-ax.set_title("y = v")
+ax.set_title("y1 = v")
 
 # Subplot 2: y = (1 - F(v)) / f(v) for various (mu, sigma)
 ax = axes2[1]
@@ -122,7 +122,7 @@ for mu in mu_vals_new:
         ax.plot(v_plot, y, lw=1.5, label=f"μ={mu}, σ={sigma}")
 ax.set_xlabel("v")
 ax.set_ylabel("y")
-ax.set_title("y = (1 − F(v)) / f(v)")
+ax.set_title("y2 = (1 − F(v)) / f(v)")
 ax.set_ylim(0, 10)
 ax.legend(fontsize=11, ncol=2)
 
