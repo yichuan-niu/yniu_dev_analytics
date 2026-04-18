@@ -112,67 +112,77 @@ def fetch_data(event_date: str = EVENT_DATE) -> pd.DataFrame:
 def compute_revenue_lift_case1(df: pd.DataFrame, max_delta: float = 1.5) -> pd.DataFrame:
     """
     Case 1: hard reserve is already the binding floor.
-      Per-auction uplift = min(delta, c1_headroom)
-      revenue_lift_pct   = sum(min(delta, c1_headroom)) / total_cpc * 100
+      If delta <= c1_headroom: per-auction change = +delta (new HR charges more)
+      If delta >  c1_headroom: new HR exceeds winner's bid → auction lost → change = -cpc
+      revenue_lift_pct = sum(per-auction changes) / total_cpc * 100
     """
     total_cpc = float(df["cpc_dollars"].sum())
-    headroom = df["c1_headroom"].dropna().astype(float).values
+    case1 = df[df["c1_headroom"].notna()].copy()
+    headroom = case1["c1_headroom"].astype(float).values
+    cpc = case1["cpc_dollars"].astype(float).values
 
-    deltas = np.arange(0.0, max_delta + 0.1, 0.1)
+    deltas = np.arange(0.0, max_delta + 0.01, 0.01)
     revenue_lift_pct = [
-        np.minimum(headroom, delta).sum() / total_cpc * 100
+        np.where(delta > headroom, -cpc, delta).sum() / total_cpc * 100
         for delta in deltas
     ]
+    print("Case 1 total revenue:", total_cpc)
     return pd.DataFrame({"delta": deltas, "revenue_lift_pct": revenue_lift_pct})
 
 
 def compute_revenue_lift_case2(df: pd.DataFrame, max_delta: float = 1.5) -> pd.DataFrame:
     """
     Case 2: GREATEST(gsp, soft_reserve) is the binding floor above hard_reserve.
-    For a given delta (hard reserve increment), per-auction uplift follows 3 conditions:
+    For a given delta (hard reserve increment), per-auction change follows 3 conditions:
       1. new_hard_reserve <= gsp_floor  (delta <= gap):
-             uplift = 0  (hard reserve still below competitive floor, no effect)
+             change = 0  (hard reserve still below competitive floor, no effect)
       2. gsp_floor < new_hard_reserve <= auction_bid  (gap < delta <= gap + c2_headroom):
-             uplift = new_hard_reserve - gsp_floor = delta - gap  (charge by hard reserve)
+             change = delta - gap  (new HR becomes binding, charges more than gsp_floor)
       3. new_hard_reserve > auction_bid  (delta > gap + c2_headroom):
-             uplift = auction_bid - gsp_floor = c2_headroom  (capped at winner's bid)
+             change = -cpc  (winner excluded from auction, entire revenue lost)
     where:
       gap         = gsp_floor - hard_reserve  (increment needed before any effect)
-      c2_headroom = auction_bid - gsp_floor   (max possible uplift per auction)
+      c2_headroom = auction_bid - gsp_floor   (room between gsp_floor and winner's bid)
     """
     total_cpc = float(df["cpc_dollars"].sum())
     case2 = df[df["c2_gap"].notna()].copy()
     gap = case2["c2_gap"].astype(float).values
     headroom = case2["c2_headroom"].astype(float).values
+    cpc = case2["cpc_dollars"].astype(float).values
 
-    deltas = np.arange(0.0, max_delta + 0.1, 0.1)
+    deltas = np.arange(0.0, max_delta + 0.01, 0.01)
     revenue_lift_pct = [
         np.where(
-            delta <= gap,                 headroom * 0,       # condition 1: no effect
+            delta <= gap,                 0,              # condition 1: no effect
             np.where(
-                delta <= gap + headroom,  delta - gap,        # condition 2: charge by hard reserve
-                                          headroom            # condition 3: capped at bid
+                delta <= gap + headroom,  delta - gap,    # condition 2: charge by new HR
+                                          -cpc            # condition 3: winner excluded
             )
         ).sum() / total_cpc * 100
         for delta in deltas
     ]
+    print("Case 2 total revenue:", total_cpc)
     return pd.DataFrame({"delta": deltas, "revenue_lift_pct": revenue_lift_pct})
 
 
 def compute_revenue_lift_case3(df: pd.DataFrame, max_delta: float = 1.5) -> pd.DataFrame:
     """
     Case 3: single-bidder auction, hard reserve is the sole price floor.
-      Per-auction uplift = min(delta, c3_headroom)
-      revenue_lift_pct   = sum(min(delta, c3_headroom)) / total_cpc * 100
+      If delta <= c3_headroom: per-auction change = +delta (new HR charges more)
+      If delta >  c3_headroom: new HR exceeds winner's bid → auction lost → change = -cpc
+      revenue_lift_pct = sum(per-auction changes) / total_cpc * 100
     """
     total_cpc = float(df["cpc_dollars"].sum())
-    headroom = df["c3_headroom"].dropna().astype(float).values
+    case3 = df[df["c3_headroom"].notna()].copy()
+    headroom = case3["c3_headroom"].astype(float).values
+    cpc = case3["cpc_dollars"].astype(float).values
 
-    deltas = np.arange(0.0, max_delta + 0.1, 0.1)
+    deltas = np.arange(0.0, max_delta + 0.01, 0.01)
     revenue_lift_pct = [
-        np.minimum(headroom, delta).sum() / total_cpc * 100
+        np.where(delta > headroom, -cpc, delta).sum() / total_cpc * 100
         for delta in deltas
     ]
+    print("Case 3 total revenue:", total_cpc)
     return pd.DataFrame({"delta": deltas, "revenue_lift_pct": revenue_lift_pct})
 
 
@@ -222,7 +232,7 @@ print(f"  Case 3 opportunities: {df['c3_headroom'].notna().sum():,}")
 print(f"  Total CPC ($):        {df['cpc_dollars'].sum():,.2f}")
 
 #%%
-max_delta = 5.0  # tunable: upper bound of hard reserve increment to explore
+max_delta = 2.0  # tunable: upper bound of hard reserve increment to explore
 results_c1 = compute_revenue_lift_case1(df, max_delta=max_delta)
 results_c2 = compute_revenue_lift_case2(df, max_delta=max_delta)
 results_c3 = compute_revenue_lift_case3(df, max_delta=max_delta)

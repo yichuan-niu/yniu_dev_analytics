@@ -16,7 +16,7 @@ ROAS_SNAPSHOT_END   = "2026-03-25"
 
 BUDGET_DATE = "2026-03-25"
 
-MAX_RESERVE_INCREMENT = 5.0  # tunable: upper bound of hard reserve increment to explore
+MAX_RESERVE_INCREMENT = 2.0  # tunable: upper bound of hard reserve increment to explore
 
 # ── Snowflake connection ───────────────────────────────────────────────────────
 def get_connection() -> snowflake.connector.SnowflakeConnection:
@@ -204,7 +204,7 @@ def fetch_budget(budget_date: str = BUDGET_DATE) -> dict:
 def compute_revenue_lift_budget_aware(
     df: pd.DataFrame,
     budget_map: dict,
-    max_delta: float = 5.0,
+    max_delta: float = 1.5,
     high_roas_ids: set = None,
 ) -> pd.DataFrame:
     """
@@ -256,43 +256,51 @@ def compute_revenue_lift_budget_aware(
     last_idx = np.append(first_idx[1:], len(cmp_ids))
     campaign_budgets = np.array([budget_map[c] for c in cmp_ids[first_idx]], dtype=float)
 
-    deltas = np.arange(0.0, max_delta + 0.01, 0.1)
+    deltas = np.arange(0.0, max_delta + 0.01, 0.01)
     records = []
     for delta in deltas:
-        # Per-row uplift (zero for rows that don't belong to the case)
-        c1_up = np.where(notna_c1, np.minimum(c1_h_safe, delta), 0.0)
-        c2_up = np.where(
+        # Per-row revenue change (zero for rows that don't belong to the case).
+        # If the new hard reserve exceeds the winner's bid, the auction is lost:
+        # change = -cpc (entire revenue from that auction is gone).
+        c1_ch = np.where(
+            notna_c1,
+            np.where(delta > c1_h_safe, -cpc, delta),
+            0.0,
+        )
+        c2_ch = np.where(
             notna_c2,
             np.where(
-                delta <= c2_g_safe,              0.0,
-                np.where(
-                    delta <= c2_g_safe + c2_h_safe,  delta - c2_g_safe,
-                                                     c2_h_safe
-                )
+                delta > c2_g_safe + c2_h_safe, -cpc,               # excluded: bid < new HR
+                np.where(delta <= c2_g_safe,    0.0,                # below gap: no effect
+                                                delta - c2_g_safe)  # HR becomes binding
             ),
             0.0,
         )
-        c3_up = np.where(notna_c3, np.minimum(c3_h_safe, delta), 0.0)
+        c3_ch = np.where(
+            notna_c3,
+            np.where(delta > c3_h_safe, -cpc, delta),
+            0.0,
+        )
 
-        # New CPC (with uplift) used to track budget depletion
-        new_cpc = cpc + c1_up + c2_up + c3_up
+        # New CPC for budget-depletion tracking (excluded auctions contribute 0)
+        new_cpc = cpc + c1_ch + c2_ch + c3_ch
 
         c1_total = c2_total = c3_total = 0.0
         for i, (start, end) in enumerate(zip(first_idx, last_idx)):
             budget = campaign_budgets[i]
             # funded[j] = True iff the cumulative spend through click j <= budget
             funded = np.cumsum(new_cpc[start:end]) <= budget
-            c1_total += c1_up[start:end][funded].sum()
-            c2_total += c2_up[start:end][funded].sum()
-            c3_total += c3_up[start:end][funded].sum()
+            c1_total += c1_ch[start:end][funded].sum()
+            c2_total += c2_ch[start:end][funded].sum()
+            c3_total += c3_ch[start:end][funded].sum()
 
         records.append({
-            "delta":       round(float(delta), 1),
+            "delta":       round(float(delta), 2),
             "c1_lift_pct": c1_total / total_cpc * 100,
             "c2_lift_pct": c2_total / total_cpc * 100,
             "c3_lift_pct": c3_total / total_cpc * 100,
         })
-
+    print("Total revenu:", total_cpc)
     return pd.DataFrame(records)
 
 
@@ -319,7 +327,7 @@ def plot_revenue_lift(
     ax.set_xlabel("Hard Reserve Increment (Δ, $)", fontsize=10)
     ax.set_ylabel("Realized Revenue Lift (%)", fontsize=10)
     ax.set_title(f"ROAS ≥ {min_roas}", fontsize=11)
-    ax.set_xticks(np.arange(0, max_delta + 0.1, 0.5))
+    ax.set_xticks(np.arange(0, max_delta + 0.1, 0.2))
     ax.set_xlim(0, max_delta + 0.1)
     ax.set_ylim(bottom=0)
     y_max = max(
@@ -328,11 +336,11 @@ def plot_revenue_lift(
         results["c3_lift_pct"].max(),
     )
     if min_roas >= 8:
-        y_step = 0.2
+        y_step = 0.02
     elif min_roas >= 6:
-        y_step = 1.0
+        y_step = 0.05
     else:
-        y_step = 2.0
+        y_step = 0.2
     ax.set_yticks(np.arange(0, y_max + y_step, y_step))
     ax.grid(axis="y", linestyle="--", alpha=0.4)
     ax.legend(fontsize=8)
