@@ -221,9 +221,25 @@ def compute_revenue_lift_budget_aware(
       Once cumulative new_cpc exceeds the campaign's daily budget, no further
       uplift is attributed from that campaign.
     """
-    total_cpc = float(df["cpc_dollars"].sum())
+    # Baseline total_cpc: budget-constrained, ROAS-agnostic.
+    # Filter only by budget_map (no ROAS filter) so the denominator is consistent
+    # across all ROAS thresholds.
+    base_work = (
+        df[df["campaign_id"].isin(budget_map)]
+        .sort_values(["campaign_id", "event_timestamp"], na_position="last")
+        .reset_index(drop=True)
+    )
+    base_cpc = base_work["cpc_dollars"].to_numpy(dtype=float)
+    base_cmp_ids = base_work["campaign_id"].to_numpy()
+    _, base_first = np.unique(base_cmp_ids, return_index=True)
+    base_last = np.append(base_first[1:], len(base_cmp_ids))
+    base_budgets = np.array([budget_map[c] for c in base_cmp_ids[base_first]], dtype=float)
 
-    # Filter to eligible campaigns
+    total_cpc = 0.0
+    for i, (start, end) in enumerate(zip(base_first, base_last)):
+        total_cpc += min(float(base_cpc[start:end].sum()), base_budgets[i])
+
+    # Filter to eligible campaigns (budget + ROAS)
     eligible_mask = df["campaign_id"].isin(budget_map)
     if high_roas_ids is not None:
         eligible_mask = eligible_mask & df["campaign_id"].isin(high_roas_ids)
@@ -300,7 +316,7 @@ def compute_revenue_lift_budget_aware(
             "c2_lift_pct": c2_total / total_cpc * 100,
             "c3_lift_pct": c3_total / total_cpc * 100,
         })
-    print("Total revenu:", total_cpc)
+    print("Total revenue:", total_cpc)
     return pd.DataFrame(records)
 
 
@@ -330,18 +346,7 @@ def plot_revenue_lift(
     ax.set_xticks(np.arange(0, max_delta + 0.1, 0.2))
     ax.set_xlim(0, max_delta + 0.1)
     ax.set_ylim(bottom=0)
-    y_max = max(
-        results["c1_lift_pct"].max(),
-        results["c2_lift_pct"].max(),
-        results["c3_lift_pct"].max(),
-    )
-    if min_roas >= 8:
-        y_step = 0.02
-    elif min_roas >= 6:
-        y_step = 0.05
-    else:
-        y_step = 0.2
-    ax.set_yticks(np.arange(0, y_max + y_step, y_step))
+
     ax.grid(axis="y", linestyle="--", alpha=0.4)
     ax.legend(fontsize=8)
 
@@ -349,7 +354,8 @@ def plot_revenue_lift(
 # ── Main ───────────────────────────────────────────────────────────────────────
 #%%
 print("Fetching auction data from Snowflake (clicked winners only)...")
-df = fetch_data()
+# df = fetch_data() # don't delete
+df = pd.read_pickle("data/realized_revenue_df.pkl")
 print(f"  Total clicked winners: {len(df):,}")
 print(f"  Case 1 opportunities:  {df['c1_headroom'].notna().sum():,}")
 print(f"  Case 2 opportunities:  {df['c2_gap'].notna().sum():,}")
@@ -358,7 +364,8 @@ print(f"  Total CPC ($):         {df['cpc_dollars'].sum():,.2f}")
 
 #%%
 print(f"\nFetching ROAS data ({ROAS_SNAPSHOT_START} – {ROAS_SNAPSHOT_END})...")
-roas_df = fetch_roas()
+# roas_df = fetch_roas() # don't delete
+roas_df = pd.read_pickle("data/realized_revenue_roas_df.pkl")
 print(f"  Total campaigns with ROAS data: {len(roas_df):,}")
 
 #%%
