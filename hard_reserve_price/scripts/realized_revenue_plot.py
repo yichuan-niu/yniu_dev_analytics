@@ -7,7 +7,7 @@ plt.close("all")
 
 # ── Constants ──────────────────────────────────────────────────────────────────
 EVENT_DATE = "2026-03-25"
-SAMPLE_PCT = 1   # SAMPLE (1) — consistent with base query
+SAMPLE_PCT = 10  # SAMPLE (10) — campaign-level sampling
 
 # ROAS thresholds to sweep: one plot per threshold
 ROAS_THRESHOLDS = [0, 2, 4, 6, 8, 10]
@@ -66,7 +66,7 @@ WITH winners AS (
       AND placement LIKE '%SPONSORED_PRODUCTS%'
       AND auction_rank = 0
       AND pricing_metadata IS NOT NULL
-      AND MOD(ABS(HASH(auction_id)), 100) < {sample_pct}
+      AND MOD(ABS(HASH(campaign_id)), 100) < {sample_pct}
 ),
 clicked AS (
     -- Only auctions that resulted in a charged click (CPC revenue actually realized).
@@ -190,14 +190,18 @@ GROUP BY campaign_id
 """
 
 
-def fetch_budget(budget_date: str = BUDGET_DATE) -> dict:
-    """Return dict {campaign_id (str) -> daily_budget_dollars (float)}."""
+def fetch_budget(budget_date: str = BUDGET_DATE) -> pd.DataFrame:
+    """Return a DataFrame with columns [campaign_id, campaign_daily_budget_dollars]."""
     query = BUDGET_QUERY.format(budget_date=budget_date)
     with get_connection() as conn:
         cursor = conn.cursor()
         cursor.execute(query)
+        columns = [col[0].lower() for col in cursor.description]
         rows = cursor.fetchall()
-    return {str(row[0]): float(row[1]) for row in rows if row[1] is not None}
+    df = pd.DataFrame(rows, columns=columns)
+    df["campaign_id"] = df["campaign_id"].astype(str)
+    df["campaign_daily_budget_dollars"] = pd.to_numeric(df["campaign_daily_budget_dollars"], errors="coerce")
+    return df.dropna(subset=["campaign_daily_budget_dollars"])
 
 
 # ── Revenue lift computation ───────────────────────────────────────────────────
@@ -355,7 +359,9 @@ def plot_revenue_lift(
 #%%
 print("Fetching auction data from Snowflake (clicked winners only)...")
 # df = fetch_data() # don't delete
+# df.to_pickle("data/realized_revenue_df.pkl")
 df = pd.read_pickle("data/realized_revenue_df.pkl")
+
 print(f"  Total clicked winners: {len(df):,}")
 print(f"  Case 1 opportunities:  {df['c1_headroom'].notna().sum():,}")
 print(f"  Case 2 opportunities:  {df['c2_gap'].notna().sum():,}")
@@ -365,12 +371,18 @@ print(f"  Total CPC ($):         {df['cpc_dollars'].sum():,.2f}")
 #%%
 print(f"\nFetching ROAS data ({ROAS_SNAPSHOT_START} – {ROAS_SNAPSHOT_END})...")
 # roas_df = fetch_roas() # don't delete
+# roas_df.to_pickle("data/realized_revenue_roas_df.pkl")
 roas_df = pd.read_pickle("data/realized_revenue_roas_df.pkl")
+
 print(f"  Total campaigns with ROAS data: {len(roas_df):,}")
 
 #%%
 print(f"\nFetching campaign daily budgets for {BUDGET_DATE}...")
-budget_map = fetch_budget()
+# budget_df = fetch_budget()
+# budget_df.to_pickle("data/realized_revenue_budget_df.pkl")
+budget_df = pd.read_pickle("data/realized_revenue_budget_df.pkl")
+
+budget_map = budget_df.set_index("campaign_id")["campaign_daily_budget_dollars"].to_dict()
 print(f"  Campaigns with known budget: {len(budget_map):,}")
 
 #%%
