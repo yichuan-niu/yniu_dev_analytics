@@ -7,7 +7,7 @@ plt.close("all")
 
 # ── Constants ──────────────────────────────────────────────────────────────────
 EVENT_DATE = "2026-03-25"
-SAMPLE_PCT = 10  # SAMPLE (10) — campaign-level sampling
+SAMPLE_PCT = 100  # campaign-level sampling
 
 # ROAS thresholds to sweep: one plot per threshold
 ROAS_THRESHOLDS = [0, 2, 4, 6, 8, 10]
