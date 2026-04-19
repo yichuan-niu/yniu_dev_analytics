@@ -7,7 +7,7 @@ plt.close("all")
 
 # ── Constants ──────────────────────────────────────────────────────────────────
 EVENT_DATE = "2026-03-25"
-SAMPLE_PCT = 100  # campaign-level sampling
+SAMPLE_PCT = 50  # campaign-level sampling
 
 # ROAS thresholds to sweep: one plot per threshold
 ROAS_THRESHOLDS = [0, 2, 4, 6, 8, 10]
@@ -16,7 +16,7 @@ ROAS_SNAPSHOT_END   = "2026-03-25"
 
 BUDGET_DATE = "2026-03-25"
 
-MAX_RESERVE_INCREMENT = 2.0  # tunable: upper bound of hard reserve increment to explore
+MAX_RESERVE_INCREMENT = 1.0  # tunable: upper bound of hard reserve increment to explore
 
 # ── Snowflake connection ───────────────────────────────────────────────────────
 def get_connection() -> snowflake.connector.SnowflakeConnection:
@@ -146,8 +146,8 @@ SELECT
     CAMPAIGN_ID,
     ROUND(SUM(TOTAL_CX_SALES_AMOUNT_LOCAL) / 100.0, 2)      AS total_attributed_sales_usd,
     ROUND(
-        SUM(TOTAL_CX_SALES_AMOUNT_LOCAL)
-        / NULLIF(SUM(TOTAL_CX_AD_FEE_LOCAL), 0),
+        NULLIF(SUM(TOTAL_CX_SALES_AMOUNT_LOCAL)
+        / NULLIF(SUM(TOTAL_CX_AD_FEE_LOCAL), 0), 0),
         2
     )                                                         AS roas
 FROM EDW.ADS.FACT_CPG_CPC_CAMPAIGN_PERFORMANCE
@@ -226,27 +226,28 @@ def compute_revenue_lift_budget_aware(
       uplift is attributed from that campaign.
     """
     # Baseline total_cpc: budget-constrained, ROAS-agnostic.
-    # Filter only by budget_map (no ROAS filter) so the denominator is consistent
-    # across all ROAS thresholds.
+    # All campaigns are included; campaigns not in budget_map get infinite budget.
     base_work = (
-        df[df["campaign_id"].isin(budget_map)]
-        .sort_values(["campaign_id", "event_timestamp"], na_position="last")
+        df.sort_values(["campaign_id", "event_timestamp"], na_position="last")
         .reset_index(drop=True)
     )
     base_cpc = base_work["cpc_dollars"].to_numpy(dtype=float)
     base_cmp_ids = base_work["campaign_id"].to_numpy()
     _, base_first = np.unique(base_cmp_ids, return_index=True)
     base_last = np.append(base_first[1:], len(base_cmp_ids))
-    base_budgets = np.array([budget_map[c] for c in base_cmp_ids[base_first]], dtype=float)
+    base_budgets = np.array(
+        [budget_map.get(c, float("inf")) for c in base_cmp_ids[base_first]], dtype=float
+    )
 
     total_cpc = 0.0
     for i, (start, end) in enumerate(zip(base_first, base_last)):
         total_cpc += min(float(base_cpc[start:end].sum()), base_budgets[i])
 
-    # Filter to eligible campaigns (budget + ROAS)
-    eligible_mask = df["campaign_id"].isin(budget_map)
+    # Filter to eligible campaigns (ROAS only; budget_map absence → infinite budget)
     if high_roas_ids is not None:
-        eligible_mask = eligible_mask & df["campaign_id"].isin(high_roas_ids)
+        eligible_mask = df["campaign_id"].isin(high_roas_ids)
+    else:
+        eligible_mask = pd.Series(True, index=df.index)
 
     work = (
         df[eligible_mask]
@@ -274,7 +275,9 @@ def compute_revenue_lift_budget_aware(
     cmp_ids = work["campaign_id"].to_numpy()
     _, first_idx = np.unique(cmp_ids, return_index=True)
     last_idx = np.append(first_idx[1:], len(cmp_ids))
-    campaign_budgets = np.array([budget_map[c] for c in cmp_ids[first_idx]], dtype=float)
+    campaign_budgets = np.array(
+        [budget_map.get(c, float("inf")) for c in cmp_ids[first_idx]], dtype=float
+    )
 
     deltas = np.arange(0.0, max_delta + 0.01, 0.01)
     records = []
@@ -358,9 +361,9 @@ def plot_revenue_lift(
 # ── Main ───────────────────────────────────────────────────────────────────────
 #%%
 print("Fetching auction data from Snowflake (clicked winners only)...")
-# df = fetch_data() # don't delete
-# df.to_pickle("data/realized_revenue_df.pkl")
-df = pd.read_pickle("data/realized_revenue_df.pkl")
+df = fetch_data() # don't delete
+df.to_pickle("data/realized_revenue_df.pkl")
+# df = pd.read_pickle("data/realized_revenue_df.pkl")
 
 print(f"  Total clicked winners: {len(df):,}")
 print(f"  Case 1 opportunities:  {df['c1_headroom'].notna().sum():,}")
@@ -370,17 +373,17 @@ print(f"  Total CPC ($):         {df['cpc_dollars'].sum():,.2f}")
 
 #%%
 print(f"\nFetching ROAS data ({ROAS_SNAPSHOT_START} – {ROAS_SNAPSHOT_END})...")
-# roas_df = fetch_roas() # don't delete
-# roas_df.to_pickle("data/realized_revenue_roas_df.pkl")
-roas_df = pd.read_pickle("data/realized_revenue_roas_df.pkl")
+roas_df = fetch_roas() # don't delete
+roas_df.to_pickle("data/realized_revenue_roas_df.pkl")
+# roas_df = pd.read_pickle("data/realized_revenue_roas_df.pkl")
 
 print(f"  Total campaigns with ROAS data: {len(roas_df):,}")
 
 #%%
 print(f"\nFetching campaign daily budgets for {BUDGET_DATE}...")
-# budget_df = fetch_budget()
-# budget_df.to_pickle("data/realized_revenue_budget_df.pkl")
-budget_df = pd.read_pickle("data/realized_revenue_budget_df.pkl")
+budget_df = fetch_budget()
+budget_df.to_pickle("data/realized_revenue_budget_df.pkl")
+# budget_df = pd.read_pickle("data/realized_revenue_budget_df.pkl")
 
 budget_map = budget_df.set_index("campaign_id")["campaign_daily_budget_dollars"].to_dict()
 print(f"  Campaigns with known budget: {len(budget_map):,}")
