@@ -361,9 +361,9 @@ def plot_revenue_lift(
 # ── Main ───────────────────────────────────────────────────────────────────────
 #%%
 print("Fetching auction data from Snowflake (clicked winners only)...")
-df = fetch_data() # don't delete
-df.to_pickle("data/realized_revenue_df.pkl")
-# df = pd.read_pickle("data/realized_revenue_df.pkl")
+# df = fetch_data() # don't delete
+# df.to_pickle("data/realized_revenue_df.pkl")
+df = pd.read_pickle("data/realized_revenue_df.pkl")
 
 print(f"  Total clicked winners: {len(df):,}")
 print(f"  Case 1 opportunities:  {df['c1_headroom'].notna().sum():,}")
@@ -373,17 +373,17 @@ print(f"  Total CPC ($):         {df['cpc_dollars'].sum():,.2f}")
 
 #%%
 print(f"\nFetching ROAS data ({ROAS_SNAPSHOT_START} – {ROAS_SNAPSHOT_END})...")
-roas_df = fetch_roas() # don't delete
-roas_df.to_pickle("data/realized_revenue_roas_df.pkl")
-# roas_df = pd.read_pickle("data/realized_revenue_roas_df.pkl")
+# roas_df = fetch_roas() # don't delete
+# roas_df.to_pickle("data/realized_revenue_roas_df.pkl")
+roas_df = pd.read_pickle("data/realized_revenue_roas_df.pkl")
 
 print(f"  Total campaigns with ROAS data: {len(roas_df):,}")
 
 #%%
 print(f"\nFetching campaign daily budgets for {BUDGET_DATE}...")
-budget_df = fetch_budget()
-budget_df.to_pickle("data/realized_revenue_budget_df.pkl")
-# budget_df = pd.read_pickle("data/realized_revenue_budget_df.pkl")
+# budget_df = fetch_budget()
+# budget_df.to_pickle("data/realized_revenue_budget_df.pkl")
+budget_df = pd.read_pickle("data/realized_revenue_budget_df.pkl")
 
 budget_map = budget_df.set_index("campaign_id")["campaign_daily_budget_dollars"].to_dict()
 print(f"  Campaigns with known budget: {len(budget_map):,}")
