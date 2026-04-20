@@ -305,10 +305,11 @@ def plot_heatmaps(summary: pd.DataFrame, event_date: str = EVENT_DATE) -> None:
 
 def plot_roas_heatmaps(summary: pd.DataFrame, event_date: str = EVENT_DATE) -> None:
     """
-    Two side-by-side ROAS heatmaps per (L1 category, placement group):
+    Three side-by-side ROAS heatmaps per (L1 category, placement group):
       Subplot 1: ROAS before hard reserve increment (current state)
       Subplot 2: ROAS after applying each cohort's best hard reserve increment
                  (sales unchanged; ad spend increases by lift_dollars)
+      Subplot 3: ROAS delta (after − before)
     """
     pivot_before = summary.pivot(index="l1_category", columns="placement_group", values="roas_before")
     pivot_after  = summary.pivot(index="l1_category", columns="placement_group", values="roas_after")
@@ -473,6 +474,46 @@ for _, row in summary.sort_values("roas_before", ascending=False).iterrows():
 
 #%%
 plot_roas_heatmaps(summary)
+
+#%%
+def plot_cpc_heatmaps(summary: pd.DataFrame, event_date: str = EVENT_DATE) -> None:
+    """
+    Three side-by-side avg-CPC heatmaps per (L1 category, placement group):
+      Subplot 1: avg CPC before hard reserve increment  (segment_cpc / n_rows)
+      Subplot 2: avg CPC after best hard reserve increment
+                 ((segment_cpc + lift_dollars) / n_rows)
+      Subplot 3: CPC delta (after − before)
+    """
+    df = summary.copy()
+    df["avg_cpc_before"] = df["segment_cpc"] / df["n_rows"]
+    df["avg_cpc_after"]  = df["segment_cpc"] * (1 + df["total_lift_pct"] / 100) / df["n_rows"]
+    df["avg_cpc_delta"]  = df["avg_cpc_after"] - df["avg_cpc_before"]
+
+    pivot_before = df.pivot(index="l1_category", columns="placement_group", values="avg_cpc_before")
+    pivot_after  = df.pivot(index="l1_category", columns="placement_group", values="avg_cpc_after")
+    pivot_delta  = df.pivot(index="l1_category", columns="placement_group", values="avg_cpc_delta")
+
+    n_rows = max(len(p.index)   for p in [pivot_before, pivot_after, pivot_delta])
+    n_cols = max(len(p.columns) for p in [pivot_before, pivot_after, pivot_delta])
+    fig, (ax1, ax2, ax3) = plt.subplots(
+        1, 3,
+        figsize=(n_cols * 3.5 * 1.5, max(5, n_rows * 0.6)),
+    )
+    fig.suptitle(
+        f"Avg CPC Before vs After Best Hard Reserve Increment\n"
+        f"(SP clicked winners, budget-aware, {event_date})",
+        fontsize=15,
+    )
+
+    _draw_heatmap(ax1, pivot_before, "Avg CPC Before ($)",              "${:.3f}")
+    _draw_heatmap(ax2, pivot_after,  "Avg CPC After (best Δ) ($)",      "${:.3f}")
+    _draw_heatmap(ax3, pivot_delta,  "CPC Delta After − Before ($)",    "${:.3f}", cmap="RdYlGn_r")
+
+    plt.tight_layout()
+    plt.show()
+
+
+plot_cpc_heatmaps(summary)
 
 #%%
 # ── Candy & Alcohol: revenue lift curve per placement group ────────────────────
