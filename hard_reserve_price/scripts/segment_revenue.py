@@ -214,21 +214,46 @@ def compute_revenue_lift_segment(
 
 
 # ── Plot ───────────────────────────────────────────────────────────────────────
-def plot_heatmap(summary: pd.DataFrame, value_col: str, title: str) -> None:
-    pivot = summary.pivot(index="l1_category", columns="placement_group", values=value_col)
-    fig, ax = plt.subplots(figsize=(max(6, len(pivot.columns) * 1.8), max(4, len(pivot) * 0.5)))
-    im = ax.imshow(pivot.values, aspect="auto", cmap="YlOrRd")
+def _draw_heatmap(ax: plt.Axes, pivot: pd.DataFrame, title: str, fmt: str) -> None:
+    cmap = plt.get_cmap("YlGnBu")
+    im = ax.imshow(pivot.values, aspect="auto", cmap=cmap)
     plt.colorbar(im, ax=ax)
     ax.set_xticks(range(len(pivot.columns)))
     ax.set_xticklabels(pivot.columns, rotation=30, ha="right", fontsize=9)
     ax.set_yticks(range(len(pivot.index)))
     ax.set_yticklabels(pivot.index, fontsize=8)
+    vmin = np.nanmin(pivot.values)
+    vmax = np.nanmax(pivot.values)
     for r in range(len(pivot.index)):
         for c in range(len(pivot.columns)):
             val = pivot.values[r, c]
             if not np.isnan(val):
-                ax.text(c, r, f"{val:.2f}", ha="center", va="center", fontsize=7)
-    ax.set_title(title, fontsize=12)
+                # use white text on dark cells, black on light cells
+                norm = (val - vmin) / (vmax - vmin) if vmax > vmin else 0.5
+                txt_color = "white" if norm > 0.6 else "black"
+                ax.text(c, r, fmt.format(val), ha="center", va="center",
+                        fontsize=7, color=txt_color)
+    ax.set_title(title, fontsize=11)
+
+
+def plot_heatmaps(summary: pd.DataFrame, event_date: str = EVENT_DATE) -> None:
+    pivot_lift  = summary.pivot(index="l1_category", columns="placement_group", values="total_lift_pct")
+    pivot_delta = summary.pivot(index="l1_category", columns="placement_group", values="best_delta")
+
+    n_rows = max(len(pivot_lift.index), len(pivot_delta.index))
+    n_cols = max(len(pivot_lift.columns), len(pivot_delta.columns))
+    fig, (ax1, ax2) = plt.subplots(
+        1, 2,
+        figsize=(n_cols * 3.5, max(5, n_rows * 0.6)),
+    )
+    fig.suptitle(
+        f"Revenue Lift by L1 Category & Placement Group\n(SP clicked winners, budget-aware, {event_date})",
+        fontsize=13,
+    )
+
+    _draw_heatmap(ax1, pivot_lift,  "Total Revenue Lift (%)",          "{:.2f}%")
+    _draw_heatmap(ax2, pivot_delta, "Best Hard Reserve Increment ($)", "${:.2f}")
+
     plt.tight_layout()
     plt.show()
 
@@ -300,13 +325,4 @@ for _, row in summary.iterrows():
     )
 
 #%%
-plot_heatmap(
-    summary,
-    value_col="total_lift_pct",
-    title=f"Total Revenue Lift (%) by L1 Category & Placement Group\n(SP clicked winners, budget-aware, {EVENT_DATE})",
-)
-plot_heatmap(
-    summary,
-    value_col="best_delta",
-    title=f"Best Hard Reserve Increment ($) by L1 Category & Placement Group\n(SP clicked winners, budget-aware, {EVENT_DATE})",
-)
+plot_heatmaps(summary)
