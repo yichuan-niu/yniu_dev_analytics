@@ -232,7 +232,7 @@ def _draw_heatmap(ax: plt.Axes, pivot: pd.DataFrame, title: str, fmt: str) -> No
                 norm = (val - vmin) / (vmax - vmin) if vmax > vmin else 0.5
                 txt_color = "white" if norm > 0.6 else "black"
                 ax.text(c, r, fmt.format(val), ha="center", va="center",
-                        fontsize=10, color=txt_color)
+                        fontsize=13, color=txt_color)
     ax.set_title(title, fontsize=14)
 
 
