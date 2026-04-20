@@ -219,9 +219,9 @@ def _draw_heatmap(ax: plt.Axes, pivot: pd.DataFrame, title: str, fmt: str) -> No
     im = ax.imshow(pivot.values, aspect="auto", cmap=cmap)
     plt.colorbar(im, ax=ax)
     ax.set_xticks(range(len(pivot.columns)))
-    ax.set_xticklabels(pivot.columns, rotation=30, ha="right", fontsize=9)
+    ax.set_xticklabels(pivot.columns, rotation=30, ha="right", fontsize=12)
     ax.set_yticks(range(len(pivot.index)))
-    ax.set_yticklabels(pivot.index, fontsize=8)
+    ax.set_yticklabels(pivot.index, fontsize=11)
     vmin = np.nanmin(pivot.values)
     vmax = np.nanmax(pivot.values)
     for r in range(len(pivot.index)):
@@ -232,8 +232,8 @@ def _draw_heatmap(ax: plt.Axes, pivot: pd.DataFrame, title: str, fmt: str) -> No
                 norm = (val - vmin) / (vmax - vmin) if vmax > vmin else 0.5
                 txt_color = "white" if norm > 0.6 else "black"
                 ax.text(c, r, fmt.format(val), ha="center", va="center",
-                        fontsize=7, color=txt_color)
-    ax.set_title(title, fontsize=11)
+                        fontsize=10, color=txt_color)
+    ax.set_title(title, fontsize=14)
 
 
 def plot_heatmaps(summary: pd.DataFrame, event_date: str = EVENT_DATE) -> None:
@@ -248,7 +248,7 @@ def plot_heatmaps(summary: pd.DataFrame, event_date: str = EVENT_DATE) -> None:
     )
     fig.suptitle(
         f"Revenue Lift by L1 Category & Placement Group\n(SP clicked winners, budget-aware, {event_date})",
-        fontsize=13,
+        fontsize=15,
     )
 
     _draw_heatmap(ax1, pivot_lift,  "Total Revenue Lift (%)",          "{:.2f}%")
