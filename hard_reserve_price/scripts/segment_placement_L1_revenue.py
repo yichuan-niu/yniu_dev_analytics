@@ -250,9 +250,9 @@ def compute_revenue_lift_segment(
 
 
 # ── Plot ───────────────────────────────────────────────────────────────────────
-def _draw_heatmap(ax: plt.Axes, pivot: pd.DataFrame, title: str, fmt: str) -> None:
-    cmap = plt.get_cmap("YlGnBu")
-    im = ax.imshow(pivot.values, aspect="auto", cmap=cmap)
+def _draw_heatmap(ax: plt.Axes, pivot: pd.DataFrame, title: str, fmt: str, cmap: str = "YlGnBu") -> None:
+    colormap = plt.get_cmap(cmap)
+    im = ax.imshow(pivot.values, aspect="auto", cmap=colormap)
     plt.colorbar(im, ax=ax)
     ax.set_xticks(range(len(pivot.columns)))
     ax.set_xticklabels(pivot.columns, rotation=30, ha="right", fontsize=12)
@@ -303,12 +303,13 @@ def plot_roas_heatmaps(summary: pd.DataFrame, event_date: str = EVENT_DATE) -> N
     """
     pivot_before = summary.pivot(index="l1_category", columns="placement_group", values="roas_before")
     pivot_after  = summary.pivot(index="l1_category", columns="placement_group", values="roas_after")
+    pivot_change = summary.pivot(index="l1_category", columns="placement_group", values="roas_change")
 
-    n_rows = max(len(pivot_before.index), len(pivot_after.index))
-    n_cols = max(len(pivot_before.columns), len(pivot_after.columns))
-    fig, (ax1, ax2) = plt.subplots(
-        1, 2,
-        figsize=(n_cols * 3.5, max(5, n_rows * 0.6)),
+    n_rows = max(len(pivot_before.index), len(pivot_after.index), len(pivot_change.index))
+    n_cols = max(len(pivot_before.columns), len(pivot_after.columns), len(pivot_change.columns))
+    fig, (ax1, ax2, ax3) = plt.subplots(
+        1, 3,
+        figsize=(n_cols * 3.5 * 1.5, max(5, n_rows * 0.6)),
     )
     fig.suptitle(
         f"ROAS Before vs After Best Hard Reserve Increment\n"
@@ -318,6 +319,7 @@ def plot_roas_heatmaps(summary: pd.DataFrame, event_date: str = EVENT_DATE) -> N
 
     _draw_heatmap(ax1, pivot_before, "ROAS Before", "{:.2f}")
     _draw_heatmap(ax2, pivot_after,  "ROAS After (best Δ per cohort)", "{:.2f}")
+    _draw_heatmap(ax3, pivot_change, "ROAS Delta (After − Before)", "{:.2f}", cmap="RdYlGn")
 
     plt.tight_layout()
     plt.show()
