@@ -209,7 +209,7 @@ def plot_revenue_lift(
     ax.set_title(f"Revenue Lift vs Hard Reserve Increment\n(SP winners, {event_date})", fontsize=13)
     ax.set_xticks(np.arange(0, max_delta + 0.1, 0.2))
     ax.set_xlim(0, max_delta + 0.1)
-    ax.set_ylim(bottom=0)
+    # ax.set_ylim(bottom=0)
     y_max = max(results_c1["revenue_lift_pct"].max(),
                 results_c2["revenue_lift_pct"].max(),
                 results_c3["revenue_lift_pct"].max())
@@ -235,8 +235,36 @@ print(f"  Case 3 opportunities: {df['c3_headroom'].notna().sum():,}")
 print(f"  Total CPC ($):        {df['cpc_dollars'].sum():,.2f}")
 
 #%%
-max_delta = 2.0  # tunable: upper bound of hard reserve increment to explore
+max_delta = 1.6  # tunable: upper bound of hard reserve increment to explore
 results_c1 = compute_revenue_lift_case1(df, max_delta=max_delta)
 results_c2 = compute_revenue_lift_case2(df, max_delta=max_delta)
 results_c3 = compute_revenue_lift_case3(df, max_delta=max_delta)
 plot_revenue_lift(results_c1, results_c2, results_c3)
+
+#%%
+# ── Revenue lift summary & optimal delta ───────────────────────────────────────
+summary = (
+    results_c1.rename(columns={"revenue_lift_pct": "c1_lift_pct"})
+    .merge(results_c2.rename(columns={"revenue_lift_pct": "c2_lift_pct"}), on="delta")
+    .merge(results_c3.rename(columns={"revenue_lift_pct": "c3_lift_pct"}), on="delta")
+)
+summary["total_lift_pct"] = summary["c1_lift_pct"] + summary["c2_lift_pct"] + summary["c3_lift_pct"]
+
+# 1. Revenue lift at specific delta checkpoints
+checkpoints = [0.2, 0.4, 0.8, 1.2, 1.6]
+print("\nRevenue lift at key Hard Reserve Increment checkpoints:")
+print(f"{'Delta ($)':>10} {'Case 1 (%)':>12} {'Case 2 (%)':>12} {'Case 3 (%)':>12} {'Total (%)':>12}")
+print("-" * 62)
+for delta in checkpoints:
+    row = summary[summary["delta"].round(2) == delta]
+    if not row.empty:
+        r = row.iloc[0]
+        print(f"{r['delta']:>10.2f} {r['c1_lift_pct']:>12.4f} {r['c2_lift_pct']:>12.4f} {r['c3_lift_pct']:>12.4f} {r['total_lift_pct']:>12.4f}")
+
+# 2. Best delta maximizing total revenue lift
+best_row = summary.loc[summary["total_lift_pct"].idxmax()]
+print(f"\nBest Hard Reserve Increment: ${best_row['delta']:.2f}")
+print(f"  Case 1 lift: {best_row['c1_lift_pct']:.4f}%")
+print(f"  Case 2 lift: {best_row['c2_lift_pct']:.4f}%")
+print(f"  Case 3 lift: {best_row['c3_lift_pct']:.4f}%")
+print(f"  Total lift:  {best_row['total_lift_pct']:.4f}%")
