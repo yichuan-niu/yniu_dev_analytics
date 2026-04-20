@@ -145,7 +145,7 @@ def compute_revenue_lift_segment(
     df_seg: pd.DataFrame,
     budget_map: dict,
     max_delta: float = 1.0,
-) -> Optional[pd.DataFrame]:
+) -> tuple:
     """
     Budget-aware total revenue lift for a pre-filtered segment DataFrame.
 
@@ -158,7 +158,8 @@ def compute_revenue_lift_segment(
     Denominator: budget-constrained baseline CPC of this segment.
     Budget is applied per campaign in chronological click order.
 
-    Returns DataFrame with columns [delta, total_lift_pct], or None if segment is empty.
+    Returns (DataFrame with columns [delta, total_lift_pct], segment_total_cpc),
+    or (None, 0) if segment is empty.
     """
     work = (
         df_seg
@@ -185,7 +186,7 @@ def compute_revenue_lift_segment(
         total_cpc += min(float(cpc[start:end].sum()), campaign_budgets[i])
 
     if total_cpc == 0:
-        return None
+        return None, 0.0
 
     competitive_floor = np.maximum(gsp, sr)  # max(raw_gsp, soft_reserve), precomputed
 
@@ -210,7 +211,7 @@ def compute_revenue_lift_segment(
             "total_lift_pct": total_lift / total_cpc * 100,
         })
 
-    return pd.DataFrame(records)
+    return pd.DataFrame(records), total_cpc
 
 
 # ── Plot ───────────────────────────────────────────────────────────────────────
@@ -298,7 +299,7 @@ for _, cohort in cohorts.iterrows():
     pg = cohort["placement_group"]
     df_seg = df[(df["l1_category"] == l1) & (df["placement_group"] == pg)]
 
-    results = compute_revenue_lift_segment(df_seg, budget_map, max_delta=MAX_RESERVE_INCREMENT)
+    results, seg_cpc = compute_revenue_lift_segment(df_seg, budget_map, max_delta=MAX_RESERVE_INCREMENT)
     if results is None:
         continue
 
@@ -307,6 +308,7 @@ for _, cohort in cohorts.iterrows():
         "l1_category":    l1,
         "placement_group": pg,
         "n_rows":          int(cohort["n_rows"]),
+        "segment_cpc":     seg_cpc,
         "best_delta":      float(best["delta"]),
         "total_lift_pct":  float(best["total_lift_pct"]),
     })
@@ -323,6 +325,15 @@ for _, row in summary.iterrows():
         f"{row['l1_category']:<35} {row['placement_group']:<15}"
         f" {row['n_rows']:>8,} {row['best_delta']:>12.2f} {row['total_lift_pct']:>16.4f}"
     )
+
+# Aggregate: weighted total lift across all cohorts using each cohort's best delta.
+# lift_dollars = total_lift_pct/100 * segment_cpc  →  sum and re-express as % of total CPC.
+total_lift_dollars = (summary["total_lift_pct"] / 100 * summary["segment_cpc"]).sum()
+total_cpc_all = summary["segment_cpc"].sum()
+overall_lift_pct = total_lift_dollars / total_cpc_all * 100 if total_cpc_all > 0 else 0.0
+print(f"\n{'─' * 92}")
+print(f"Overall total revenue lift (best Δ per cohort): {overall_lift_pct:.4f}%"
+      f"  (${total_lift_dollars:,.2f} lift on ${total_cpc_all:,.2f} total CPC)")
 
 #%%
 plot_heatmaps(summary)
