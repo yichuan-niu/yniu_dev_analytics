@@ -352,7 +352,7 @@ def plot_revenue_lift(
     ax.set_title(f"ROAS ≥ {min_roas}", fontsize=11)
     ax.set_xticks(np.arange(0, max_delta + 0.1, 0.2))
     ax.set_xlim(0, max_delta + 0.1)
-    ax.set_ylim(bottom=0)
+    # ax.set_ylim(bottom=0)
 
     ax.grid(axis="y", linestyle="--", alpha=0.4)
     ax.legend(fontsize=8)
@@ -396,6 +396,7 @@ fig.suptitle(
     fontsize=13,
 )
 
+best_rows = []
 for ax, min_roas in zip(axes.flat, ROAS_THRESHOLDS):
     high_roas_ids = set(roas_df.loc[roas_df["roas"] >= min_roas, "campaign_id"])
     eligible = df["campaign_id"].isin(budget_map) & df["campaign_id"].isin(high_roas_ids)
@@ -409,5 +410,18 @@ for ax, min_roas in zip(axes.flat, ROAS_THRESHOLDS):
     )
     plot_revenue_lift(results, ax=ax, min_roas=min_roas)
 
+    results["total_lift_pct"] = results["c1_lift_pct"] + results["c2_lift_pct"] + results["c3_lift_pct"]
+    best = results.loc[results["total_lift_pct"].idxmax()].copy()
+    best["min_roas"] = min_roas
+    best_rows.append(best)
+
 plt.tight_layout()
 plt.show()
+
+#%%
+# ── Best delta per ROAS threshold ──────────────────────────────────────────────
+print("\nBest Hard Reserve Increment by ROAS Threshold:")
+print(f"{'Min ROAS':>10} {'Best Δ ($)':>12} {'Total Lift (%)':>16}")
+print("-" * 42)
+for row in best_rows:
+    print(f"{row['min_roas']:>10.0f} {row['delta']:>12.2f} {row['total_lift_pct']:>16.4f}")
