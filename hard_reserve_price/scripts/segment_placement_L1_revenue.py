@@ -516,6 +516,56 @@ def plot_cpc_heatmaps(summary: pd.DataFrame, event_date: str = EVENT_DATE) -> No
 plot_cpc_heatmaps(summary)
 
 #%%
+# ── Debug: per-placement breakdown for given L1 categories ────────────────────
+def debug_cohort(l1_categories: list) -> None:
+    """
+    For each L1 category in l1_categories, print a per-placement breakdown:
+      - Category sales ($)
+      - Category ad fee before / after hard reserve increment ($)
+      - ROAS before / after
+      - Avg CPC before / after ($)
+      - Category clicks (n_rows)
+    """
+    _roas_lookup = roas_df.set_index("campaign_id")
+    cols = (
+        f"{'Placement':<16} {'Sales ($)':>12} {'AdFee Before':>13} {'AdFee After':>12}"
+        f" {'ROAS Bef':>10} {'ROAS Aft':>10}"
+        f" {'AvgCPC Bef':>11} {'AvgCPC Aft':>11} {'Clicks':>8}"
+    )
+
+    for l1 in l1_categories:
+        rows = summary[summary["l1_category"] == l1].sort_values("placement_group")
+        if rows.empty:
+            print(f"\nNo data for: {l1}")
+            continue
+
+        print(f"\n{'=' * len(cols)}")
+        print(f"L1 Category: {l1}")
+        print(cols)
+        print("-" * len(cols))
+
+        for _, row in rows.iterrows():
+            pg = row["placement_group"]
+            campaign_ids = df[(df["l1_category"] == l1) & (df["placement_group"] == pg)]["campaign_id"].unique()
+            cohort_roas = _roas_lookup.reindex(campaign_ids).dropna(subset=["total_ad_fee_usd"])
+
+            cohort_sales  = cohort_roas["total_attributed_sales_usd"].sum() if not cohort_roas.empty else float("nan")
+            cohort_ad_fee = cohort_roas["total_ad_fee_usd"].sum()           if not cohort_roas.empty else float("nan")
+            lift_dollars  = row["total_lift_pct"] / 100 * row["segment_cpc"]
+            ad_fee_after  = cohort_ad_fee + lift_dollars
+            avg_cpc_before = row["segment_cpc"] / row["n_rows"]
+            avg_cpc_after  = row["segment_cpc"] * (1 + row["total_lift_pct"] / 100) / row["n_rows"]
+
+            print(
+                f"{pg:<16} {cohort_sales:>12.2f} {cohort_ad_fee:>13.2f} {ad_fee_after:>12.2f}"
+                f" {row['roas_before']:>10.4f} {row['roas_after']:>10.4f}"
+                f" {avg_cpc_before:>11.4f} {avg_cpc_after:>11.4f} {row['n_rows']:>8,}"
+            )
+
+
+debug_cohort(["Candy", "Alcohol"])
+
+#%%
 # ── Candy & Alcohol: revenue lift curve per placement group ────────────────────
 SEGMENT_MAX_DELTA = 2.0
 segment_specs = [
