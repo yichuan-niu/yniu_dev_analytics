@@ -9,8 +9,8 @@ plt.close("all")
 
 # ── Constants ──────────────────────────────────────────────────────────────────
 EVENT_DATE   = "2026-03-25"
-SAMPLE_PCT   = 50          # campaign-level sampling
-MAX_RESERVE_INCREMENT = 1.0
+SAMPLE_PCT   = 100          # campaign-level sampling
+MAX_RESERVE_INCREMENT = 2.0
 MIN_COHORT_ROWS = 50       # skip cohorts with too few clicked-winner rows
 
 PLACEMENT_GROUPS = {
