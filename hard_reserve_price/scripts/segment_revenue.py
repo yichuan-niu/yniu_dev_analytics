@@ -63,7 +63,6 @@ WITH winners AS (
         GET(PARSE_JSON(acd.pricing_metadata), 'hardReserve')::INT / 100.0          AS hard_reserve_dollars,
         GET(PARSE_JSON(acd.pricing_metadata), 'softReserveBeta')::FLOAT
             * GET(PARSE_JSON(acd.pricing_metadata), 'nextBid')::INT / 100.0        AS soft_reserve_dollars,
-        GET(PARSE_JSON(acd.pricing_metadata), 'finalAuctionSize')::INT              AS final_auction_size,
         COALESCE(ci.L1_CATEGORY_NAME, 'Unknown')                                   AS l1_category
     FROM edw.ads.ads_auction_candidates_event_delta acd
     LEFT JOIN EDW.ADXP.CPG_PRODUCT_INDEX ci ON acd.dd_sic = ci.dd_sic
@@ -90,42 +89,12 @@ SELECT
     winners.campaign_id,
     winners.placement,
     winners.l1_category,
+    auction_bid_dollars,
     cpc_dollars,
-    clicked.event_timestamp,
-    -- Case 1: hard reserve is the binding floor (competitive auction)
-    CASE
-        WHEN final_auction_size > 1
-         AND hard_reserve_dollars >= GREATEST(raw_gsp_dollars, soft_reserve_dollars)
-         AND cpc_dollars = hard_reserve_dollars
-         AND auction_bid_dollars > hard_reserve_dollars
-        THEN auction_bid_dollars - hard_reserve_dollars
-        ELSE NULL
-    END                                                                             AS c1_headroom,
-    -- Case 2: GREATEST(gsp, soft_reserve) is the binding floor (competitive auction)
-    CASE
-        WHEN final_auction_size > 1
-         AND auction_bid_dollars > GREATEST(raw_gsp_dollars, soft_reserve_dollars)
-         AND GREATEST(raw_gsp_dollars, soft_reserve_dollars) > hard_reserve_dollars
-         AND cpc_dollars = GREATEST(raw_gsp_dollars, soft_reserve_dollars)
-        THEN GREATEST(raw_gsp_dollars, soft_reserve_dollars) - hard_reserve_dollars
-        ELSE NULL
-    END                                                                             AS c2_gap,
-    CASE
-        WHEN final_auction_size > 1
-         AND auction_bid_dollars > GREATEST(raw_gsp_dollars, soft_reserve_dollars)
-         AND GREATEST(raw_gsp_dollars, soft_reserve_dollars) > hard_reserve_dollars
-         AND cpc_dollars = GREATEST(raw_gsp_dollars, soft_reserve_dollars)
-        THEN auction_bid_dollars - GREATEST(raw_gsp_dollars, soft_reserve_dollars)
-        ELSE NULL
-    END                                                                             AS c2_headroom,
-    -- Case 3: single-bidder auction, hard reserve is sole floor
-    CASE
-        WHEN final_auction_size = 1
-         AND cpc_dollars = hard_reserve_dollars
-         AND auction_bid_dollars > hard_reserve_dollars
-        THEN auction_bid_dollars - hard_reserve_dollars
-        ELSE NULL
-    END                                                                             AS c3_headroom
+    raw_gsp_dollars,
+    soft_reserve_dollars,
+    hard_reserve_dollars,
+    clicked.event_timestamp
 FROM winners
 INNER JOIN clicked ON winners.auction_id = clicked.ad_auction_id
 """
@@ -148,7 +117,8 @@ def fetch_data(event_date: str = EVENT_DATE) -> pd.DataFrame:
         columns = [col[0].lower() for col in cursor.description]
         rows = cursor.fetchall()
     df = pd.DataFrame(rows, columns=columns)
-    for col in ["cpc_dollars", "c1_headroom", "c2_gap", "c2_headroom", "c3_headroom"]:
+    for col in ["auction_bid_dollars", "cpc_dollars", "raw_gsp_dollars",
+                "soft_reserve_dollars", "hard_reserve_dollars"]:
         df[col] = pd.to_numeric(df[col], errors="coerce")
     df["event_timestamp"] = pd.to_datetime(df["event_timestamp"], errors="coerce")
     df["campaign_id"] = df["campaign_id"].astype(str)
@@ -179,10 +149,14 @@ def compute_revenue_lift_segment(
     """
     Budget-aware total revenue lift for a pre-filtered segment DataFrame.
 
-    Denominator: budget-constrained CPC of this segment only.
-    Budget is applied per campaign using the segment's rows in chronological order.
-    Note: campaign budget is shared across all segments, so this is an approximation
-    when a campaign appears in multiple (L1 category, placement group) cohorts.
+    For each hard reserve increment delta:
+      new_hr = hard_reserve + delta
+      - If auction_bid < new_hr: auction is not winnable → new_cpc = 0
+      - Otherwise: new_cpc = min(auction_bid, max(raw_gsp, soft_reserve, new_hr))
+      change = new_cpc - cpc
+
+    Denominator: budget-constrained baseline CPC of this segment.
+    Budget is applied per campaign in chronological click order.
 
     Returns DataFrame with columns [delta, total_lift_pct], or None if segment is empty.
     """
@@ -192,20 +166,11 @@ def compute_revenue_lift_segment(
         .reset_index(drop=True)
     )
 
-    cpc   = work["cpc_dollars"].to_numpy(dtype=float)
-    c1_h  = work["c1_headroom"].to_numpy(dtype=float)
-    c2_g  = work["c2_gap"].to_numpy(dtype=float)
-    c2_h  = work["c2_headroom"].to_numpy(dtype=float)
-    c3_h  = work["c3_headroom"].to_numpy(dtype=float)
-
-    notna_c1 = ~np.isnan(c1_h)
-    notna_c2 = ~np.isnan(c2_g)
-    notna_c3 = ~np.isnan(c3_h)
-
-    c1_h_safe = np.nan_to_num(c1_h)
-    c2_g_safe = np.nan_to_num(c2_g)
-    c2_h_safe = np.nan_to_num(c2_h)
-    c3_h_safe = np.nan_to_num(c3_h)
+    cpc = work["cpc_dollars"].to_numpy(dtype=float)
+    bid = work["auction_bid_dollars"].to_numpy(dtype=float)
+    gsp = work["raw_gsp_dollars"].to_numpy(dtype=float)
+    sr  = work["soft_reserve_dollars"].to_numpy(dtype=float)
+    hr  = work["hard_reserve_dollars"].to_numpy(dtype=float)
 
     cmp_ids = work["campaign_id"].to_numpy()
     _, first_idx = np.unique(cmp_ids, return_index=True)
@@ -222,29 +187,23 @@ def compute_revenue_lift_segment(
     if total_cpc == 0:
         return None
 
+    competitive_floor = np.maximum(gsp, sr)  # max(raw_gsp, soft_reserve), precomputed
+
     deltas = np.arange(0.0, max_delta + 0.01, 0.01)
     records = []
     for delta in deltas:
-        c1_ch = np.where(notna_c1, np.where(delta > c1_h_safe, -cpc, delta), 0.0)
-        c2_ch = np.where(
-            notna_c2,
-            np.where(
-                delta > c2_g_safe + c2_h_safe, -cpc,
-                np.where(delta <= c2_g_safe,    0.0, delta - c2_g_safe),
-            ),
-            0.0,
+        new_hr = hr + delta
+        new_cpc = np.where(
+            bid < new_hr,
+            0.0,                                              # auction lost
+            np.minimum(bid, np.maximum(competitive_floor, new_hr)),  # new charge
         )
-        c3_ch = np.where(notna_c3, np.where(delta > c3_h_safe, -cpc, delta), 0.0)
+        change = new_cpc - cpc
 
-        new_cpc = cpc + c1_ch + c2_ch + c3_ch
         total_lift = 0.0
         for i, (start, end) in enumerate(zip(first_idx, last_idx)):
             funded = np.cumsum(new_cpc[start:end]) <= campaign_budgets[i]
-            total_lift += (
-                c1_ch[start:end][funded].sum()
-                + c2_ch[start:end][funded].sum()
-                + c3_ch[start:end][funded].sum()
-            )
+            total_lift += change[start:end][funded].sum()
 
         records.append({
             "delta":          round(float(delta), 2),
@@ -282,9 +241,6 @@ print("Fetching auction data from Snowflake (clicked winners only)...")
 df = pd.read_pickle("data/segment_revenue_df.pkl")
 
 print(f"  Total clicked winners: {len(df):,}")
-print(f"  Case 1 opportunities:  {df['c1_headroom'].notna().sum():,}")
-print(f"  Case 2 opportunities:  {df['c2_gap'].notna().sum():,}")
-print(f"  Case 3 opportunities:  {df['c3_headroom'].notna().sum():,}")
 print(f"  Total CPC ($):         {df['cpc_dollars'].sum():,.2f}")
 
 #%%
