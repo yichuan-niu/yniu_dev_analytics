@@ -473,3 +473,28 @@ for _, row in summary.sort_values("roas_before", ascending=False).iterrows():
 
 #%%
 plot_roas_heatmaps(summary)
+
+#%%
+# ── Candy L1 category: revenue lift curve per placement group ──────────────────
+CANDY_MAX_DELTA = 0.5
+candy_cohorts = cohorts[cohorts["l1_category"].str.lower().str.contains("candy")]
+
+fig, ax = plt.subplots(figsize=(10, 5))
+for _, cohort in candy_cohorts.iterrows():
+    pg = cohort["placement_group"]
+    df_seg = df[(df["l1_category"] == cohort["l1_category"]) & (df["placement_group"] == pg)]
+    results, _ = compute_revenue_lift_segment(df_seg, budget_map, max_delta=CANDY_MAX_DELTA)
+    if results is None:
+        continue
+    ax.plot(results["delta"], results["total_lift_pct"], linewidth=2, label=pg)
+
+ax.set_xlabel("Hard Reserve Increment (Δ, $)", fontsize=12)
+ax.set_ylabel("Revenue Lift (%)", fontsize=12)
+ax.set_title(f"Candy L1 Category: Revenue Lift vs Hard Reserve Increment\n(SP clicked winners, budget-aware, {EVENT_DATE})", fontsize=13)
+ax.set_xticks(np.arange(0, CANDY_MAX_DELTA + 0.1, 0.1))
+ax.set_xlim(0, CANDY_MAX_DELTA)
+ax.axhline(0, color="gray", linewidth=0.8, linestyle="--")
+ax.grid(axis="y", linestyle="--", alpha=0.4)
+ax.legend(title="Placement Group")
+plt.tight_layout()
+plt.show()
