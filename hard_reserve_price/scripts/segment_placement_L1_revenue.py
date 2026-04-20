@@ -8,10 +8,12 @@ import snowflake.connector
 plt.close("all")
 
 # ── Constants ──────────────────────────────────────────────────────────────────
-EVENT_DATE   = "2026-03-25"
-SAMPLE_PCT   = 100          # campaign-level sampling
+EVENT_DATE            = "2026-03-25"
+SAMPLE_PCT            = 100   # campaign-level sampling
 MAX_RESERVE_INCREMENT = 5.0
-MIN_COHORT_ROWS = 50       # skip cohorts with too few clicked-winner rows
+MIN_COHORT_ROWS       = 50    # skip cohorts with too few clicked-winner rows
+ROAS_SNAPSHOT_START   = "2026-03-19"
+ROAS_SNAPSHOT_END     = "2026-03-25"
 
 PLACEMENT_GROUPS = {
     "Search": [
@@ -108,6 +110,21 @@ WHERE date_est = '{budget_date}'
 GROUP BY campaign_id
 """
 
+# Returns total attributed sales and total ad fee per campaign over a snapshot window.
+# Used to compute before/after ROAS per (L1 category, placement group) cohort.
+ROAS_QUERY = """
+SELECT
+    CAMPAIGN_ID,
+    SUM(TOTAL_CX_SALES_AMOUNT_LOCAL) / 100.0  AS total_attributed_sales_usd,
+    SUM(TOTAL_CX_AD_FEE_LOCAL) / 100.0        AS total_ad_fee_usd
+FROM EDW.ADS.FACT_CPG_CPC_CAMPAIGN_PERFORMANCE
+WHERE SNAPSHOT_DATE BETWEEN '{start_date}' AND '{end_date}'
+  AND TIMEZONE_TYPE = 'utc'
+  AND REPORT_TYPE   = '[brand_cohorts] campaign'
+GROUP BY CAMPAIGN_ID
+HAVING SUM(TOTAL_CX_AD_FEE_LOCAL) > 0
+"""
+
 
 def fetch_data(event_date: str = EVENT_DATE) -> pd.DataFrame:
     query = QUERY.format(sample_pct=SAMPLE_PCT, event_date=event_date)
@@ -123,6 +140,24 @@ def fetch_data(event_date: str = EVENT_DATE) -> pd.DataFrame:
     df["event_timestamp"] = pd.to_datetime(df["event_timestamp"], errors="coerce")
     df["campaign_id"] = df["campaign_id"].astype(str)
     return df
+
+
+def fetch_roas(
+    start_date: str = ROAS_SNAPSHOT_START,
+    end_date: str = ROAS_SNAPSHOT_END,
+) -> pd.DataFrame:
+    """Return per-campaign [campaign_id, total_attributed_sales_usd, total_ad_fee_usd]."""
+    query = ROAS_QUERY.format(start_date=start_date, end_date=end_date)
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute(query)
+        columns = [col[0].lower() for col in cursor.description]
+        rows = cursor.fetchall()
+    df = pd.DataFrame(rows, columns=columns)
+    df["campaign_id"] = df["campaign_id"].astype(str)
+    for col in ["total_attributed_sales_usd", "total_ad_fee_usd"]:
+        df[col] = pd.to_numeric(df[col], errors="coerce")
+    return df.dropna(subset=["total_ad_fee_usd"])
 
 
 def fetch_budget(budget_date: str = EVENT_DATE) -> pd.DataFrame:
@@ -259,21 +294,57 @@ def plot_heatmaps(summary: pd.DataFrame, event_date: str = EVENT_DATE) -> None:
     plt.show()
 
 
+def plot_roas_heatmaps(summary: pd.DataFrame, event_date: str = EVENT_DATE) -> None:
+    """
+    Two side-by-side ROAS heatmaps per (L1 category, placement group):
+      Subplot 1: ROAS before hard reserve increment (current state)
+      Subplot 2: ROAS after applying each cohort's best hard reserve increment
+                 (sales unchanged; ad spend increases by lift_dollars)
+    """
+    pivot_before = summary.pivot(index="l1_category", columns="placement_group", values="roas_before")
+    pivot_after  = summary.pivot(index="l1_category", columns="placement_group", values="roas_after")
+
+    n_rows = max(len(pivot_before.index), len(pivot_after.index))
+    n_cols = max(len(pivot_before.columns), len(pivot_after.columns))
+    fig, (ax1, ax2) = plt.subplots(
+        1, 2,
+        figsize=(n_cols * 3.5, max(5, n_rows * 0.6)),
+    )
+    fig.suptitle(
+        f"ROAS Before vs After Best Hard Reserve Increment\n"
+        f"(SP clicked winners, budget-aware, {event_date})",
+        fontsize=15,
+    )
+
+    _draw_heatmap(ax1, pivot_before, "ROAS Before", "{:.2f}")
+    _draw_heatmap(ax2, pivot_after,  "ROAS After (best Δ per cohort)", "{:.2f}")
+
+    plt.tight_layout()
+    plt.show()
+
+
 # ── Main ───────────────────────────────────────────────────────────────────────
 #%%
 print("Fetching auction data from Snowflake (clicked winners only)...")
 # df = fetch_data()
 # df.to_pickle("data/segment_revenue_df.pkl")
-df = pd.read_pickle("data/segment_revenue_df.pkl")
+df = pd.read_pickle("data/segment_placement_L1_revenue_df.pkl")
 
 print(f"  Total clicked winners: {len(df):,}")
 print(f"  Total CPC ($):         {df['cpc_dollars'].sum():,.2f}")
 
 #%%
+print(f"\nFetching ROAS data ({ROAS_SNAPSHOT_START} – {ROAS_SNAPSHOT_END})...")
+roas_df = fetch_roas()
+roas_df.to_pickle("data/segment_placement_L1_roas_df.pkl")
+# roas_df = pd.read_pickle("data/segment_placement_L1_roas_df.pkl")
+print(f"  Campaigns with ROAS data: {len(roas_df):,}")
+
+#%%
 print(f"\nFetching campaign daily budgets for {EVENT_DATE}...")
 # budget_df = fetch_budget()
 # budget_df.to_pickle("data/segment_revenue_budget_df.pkl")
-budget_df = pd.read_pickle("data/segment_revenue_budget_df.pkl")
+budget_df = pd.read_pickle("data/segment_placement_L1_budget_df.pkl")
 budget_map = budget_df.set_index("campaign_id")["campaign_daily_budget_dollars"].to_dict()
 print(f"  Campaigns with known budget: {len(budget_map):,}")
 
@@ -337,3 +408,57 @@ print(f"Overall total revenue lift (best Δ per cohort): {overall_lift_pct:.4f}%
 
 #%%
 plot_heatmaps(summary)
+
+#%%
+# ── ROAS before / after hard reserve increment ─────────────────────────────────
+# For each cohort, aggregate sales and ad fees across member campaigns, then:
+#   before ROAS = cohort_sales / cohort_ad_fee
+#   after  ROAS = cohort_sales / (cohort_ad_fee + lift_dollars)
+#                 where lift_dollars = total_lift_pct/100 * segment_cpc
+# Sales are assumed unchanged; only ad spend increases with the higher hard reserve.
+
+roas_lookup = roas_df.set_index("campaign_id")
+
+roas_rows = []
+for _, row in summary.iterrows():
+    l1 = row["l1_category"]
+    pg = row["placement_group"]
+
+    campaign_ids = df[(df["l1_category"] == l1) & (df["placement_group"] == pg)]["campaign_id"].unique()
+    cohort_roas = roas_lookup.reindex(campaign_ids).dropna(subset=["total_ad_fee_usd"])
+
+    if cohort_roas.empty or cohort_roas["total_ad_fee_usd"].sum() == 0:
+        continue
+
+    cohort_sales  = cohort_roas["total_attributed_sales_usd"].sum()
+    cohort_ad_fee = cohort_roas["total_ad_fee_usd"].sum()
+    lift_dollars  = row["total_lift_pct"] / 100 * row["segment_cpc"]
+
+    roas_before = cohort_sales / cohort_ad_fee
+    roas_after  = cohort_sales / (cohort_ad_fee + lift_dollars) if (cohort_ad_fee + lift_dollars) > 0 else 0.0
+
+    roas_rows.append({
+        "l1_category":    l1,
+        "placement_group": pg,
+        "roas_before":    round(roas_before, 4),
+        "roas_after":     round(roas_after,  4),
+        "roas_change":    round(roas_after - roas_before, 4),
+    })
+
+roas_summary = pd.DataFrame(roas_rows)
+summary = summary.merge(roas_summary, on=["l1_category", "placement_group"], how="left")
+
+print("\nROAS Before vs After (best Δ per cohort):")
+print(f"{'L1 Category':<35} {'Placement Group':<15} {'Best Δ ($)':>12} {'ROAS Before':>13} {'ROAS After':>12} {'ROAS Δ':>10}")
+print("-" * 102)
+for _, row in summary.sort_values("roas_before", ascending=False).iterrows():
+    if pd.isna(row.get("roas_before")):
+        continue
+    print(
+        f"{row['l1_category']:<35} {row['placement_group']:<15}"
+        f" {row['best_delta']:>12.2f} {row['roas_before']:>13.4f}"
+        f" {row['roas_after']:>12.4f} {row['roas_change']:>10.4f}"
+    )
+
+#%%
+plot_roas_heatmaps(summary)
