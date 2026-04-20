@@ -225,6 +225,15 @@ def compute_revenue_lift_segment(
 
     competitive_floor = np.maximum(gsp, sr)  # max(raw_gsp, soft_reserve), precomputed
 
+    # Formula-predicted CPC at delta=0 (used as anchor so change=0 at delta=0).
+    # Raw cpc from data may differ from this formula due to data edge cases; anchoring
+    # to the formula baseline ensures the lift curve is correctly zero-referenced.
+    cpc_baseline = np.where(
+        bid < hr,
+        0.0,
+        np.minimum(bid, np.maximum(competitive_floor, hr)),
+    )
+
     deltas = np.arange(0.0, max_delta + 0.01, 0.01)
     records = []
     for delta in deltas:
@@ -234,7 +243,7 @@ def compute_revenue_lift_segment(
             0.0,                                              # auction lost
             np.minimum(bid, np.maximum(competitive_floor, new_hr)),  # new charge
         )
-        change = new_cpc - cpc
+        change = new_cpc - cpc_baseline
 
         total_lift = 0.0
         for i, (start, end) in enumerate(zip(first_idx, last_idx)):
