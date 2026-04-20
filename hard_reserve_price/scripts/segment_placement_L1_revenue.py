@@ -425,9 +425,15 @@ plot_heatmaps(summary)
 # ── ROAS before / after hard reserve increment ─────────────────────────────────
 # For each cohort, aggregate sales and ad fees across member campaigns, then:
 #   before ROAS = cohort_sales / cohort_ad_fee
-#   after  ROAS = cohort_sales / (cohort_ad_fee + lift_dollars)
-#                 where lift_dollars = total_lift_pct/100 * segment_cpc
+#   after  ROAS = cohort_sales / (cohort_ad_fee + lift_dollars_scaled)
+#                 where lift_dollars_scaled = (total_lift_pct/100 * segment_cpc) * n_roas_days
+# The ROAS snapshot covers n_roas_days days while revenue lift is for a single day (EVENT_DATE),
+# so we scale lift_dollars by n_roas_days to align both to the same time window.
 # Sales are assumed unchanged; only ad spend increases with the higher hard reserve.
+
+from datetime import date as _date
+_n_roas_days = (_date.fromisoformat(ROAS_SNAPSHOT_END) - _date.fromisoformat(ROAS_SNAPSHOT_START)).days + 1
+print(f"ROAS window: {ROAS_SNAPSHOT_START} – {ROAS_SNAPSHOT_END} ({_n_roas_days} days)")
 
 roas_lookup = roas_df.set_index("campaign_id")
 
@@ -444,7 +450,7 @@ for _, row in summary.iterrows():
 
     cohort_sales  = cohort_roas["total_attributed_sales_usd"].sum()
     cohort_ad_fee = cohort_roas["total_ad_fee_usd"].sum()
-    lift_dollars  = row["total_lift_pct"] / 100 * row["segment_cpc"]
+    lift_dollars  = row["total_lift_pct"] / 100 * row["segment_cpc"] * _n_roas_days
 
     roas_before = cohort_sales / cohort_ad_fee
     roas_after  = cohort_sales / (cohort_ad_fee + lift_dollars) if (cohort_ad_fee + lift_dollars) > 0 else 0.0
@@ -516,6 +522,38 @@ def plot_cpc_heatmaps(summary: pd.DataFrame, event_date: str = EVENT_DATE) -> No
 plot_cpc_heatmaps(summary)
 
 #%%
+# ── Candy & Alcohol: revenue lift curve per placement group ────────────────────
+SEGMENT_MAX_DELTA = 2.0
+segment_specs = [
+    ("Candy",    cohorts[cohorts["l1_category"].str.lower().str.contains("candy")]),
+    ("Alcohol",  cohorts[cohorts["l1_category"].str.lower().str.contains("alcohol")]),
+]
+
+fig, axes = plt.subplots(1, 2, figsize=(18, 5), sharey=False)
+fig.suptitle(f"Revenue Lift vs Hard Reserve Increment\n(SP clicked winners, budget-aware, {EVENT_DATE})", fontsize=14)
+
+for ax, (label, seg_cohorts) in zip(axes, segment_specs):
+    for _, cohort in seg_cohorts.iterrows():
+        pg = cohort["placement_group"]
+        df_seg = df[(df["l1_category"] == cohort["l1_category"]) & (df["placement_group"] == pg)]
+        results, _ = compute_revenue_lift_segment(df_seg, budget_map, max_delta=SEGMENT_MAX_DELTA)
+        if results is None:
+            continue
+        ax.plot(results["delta"], results["total_lift_pct"], linewidth=2, label=pg)
+    ax.set_xlabel("Hard Reserve Increment (Δ, $)", fontsize=12)
+    ax.set_ylabel("Revenue Lift (%)", fontsize=12)
+    ax.set_title(f"{label} L1 Category", fontsize=13)
+    ax.set_xticks(np.arange(0, SEGMENT_MAX_DELTA + 0.1, 0.1))
+    ax.set_xlim(0, SEGMENT_MAX_DELTA)
+    ax.axhline(0, color="gray", linewidth=0.8, linestyle="--")
+    ax.grid(axis="y", linestyle="--", alpha=0.4)
+    ax.legend(title="Placement Group")
+
+plt.tight_layout()
+plt.show()
+
+
+#%%
 # ── Debug: per-placement breakdown for given L1 categories ────────────────────
 def debug_cohort(l1_categories: list) -> None:
     """
@@ -551,7 +589,7 @@ def debug_cohort(l1_categories: list) -> None:
 
             cohort_sales  = cohort_roas["total_attributed_sales_usd"].sum() if not cohort_roas.empty else float("nan")
             cohort_ad_fee = cohort_roas["total_ad_fee_usd"].sum()           if not cohort_roas.empty else float("nan")
-            lift_dollars  = row["total_lift_pct"] / 100 * row["segment_cpc"]
+            lift_dollars  = row["total_lift_pct"] / 100 * row["segment_cpc"] * _n_roas_days
             ad_fee_after  = cohort_ad_fee + lift_dollars
             avg_cpc_before = row["segment_cpc"] / row["n_rows"]
             avg_cpc_after  = row["segment_cpc"] * (1 + row["total_lift_pct"] / 100) / row["n_rows"]
@@ -563,35 +601,4 @@ def debug_cohort(l1_categories: list) -> None:
             )
 
 
-debug_cohort(["Candy", "Alcohol"])
-
-#%%
-# ── Candy & Alcohol: revenue lift curve per placement group ────────────────────
-SEGMENT_MAX_DELTA = 2.0
-segment_specs = [
-    ("Candy",    cohorts[cohorts["l1_category"].str.lower().str.contains("candy")]),
-    ("Alcohol",  cohorts[cohorts["l1_category"].str.lower().str.contains("alcohol")]),
-]
-
-fig, axes = plt.subplots(1, 2, figsize=(18, 5), sharey=False)
-fig.suptitle(f"Revenue Lift vs Hard Reserve Increment\n(SP clicked winners, budget-aware, {EVENT_DATE})", fontsize=14)
-
-for ax, (label, seg_cohorts) in zip(axes, segment_specs):
-    for _, cohort in seg_cohorts.iterrows():
-        pg = cohort["placement_group"]
-        df_seg = df[(df["l1_category"] == cohort["l1_category"]) & (df["placement_group"] == pg)]
-        results, _ = compute_revenue_lift_segment(df_seg, budget_map, max_delta=SEGMENT_MAX_DELTA)
-        if results is None:
-            continue
-        ax.plot(results["delta"], results["total_lift_pct"], linewidth=2, label=pg)
-    ax.set_xlabel("Hard Reserve Increment (Δ, $)", fontsize=12)
-    ax.set_ylabel("Revenue Lift (%)", fontsize=12)
-    ax.set_title(f"{label} L1 Category", fontsize=13)
-    ax.set_xticks(np.arange(0, SEGMENT_MAX_DELTA + 0.1, 0.1))
-    ax.set_xlim(0, SEGMENT_MAX_DELTA)
-    ax.axhline(0, color="gray", linewidth=0.8, linestyle="--")
-    ax.grid(axis="y", linestyle="--", alpha=0.4)
-    ax.legend(title="Placement Group")
-
-plt.tight_layout()
-plt.show()
+debug_cohort(["Candy", "Pet Care"])
