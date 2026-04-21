@@ -1,5 +1,5 @@
 import os
-from datetime import date, timedelta
+from datetime import date
 
 import numpy as np
 import pandas as pd
@@ -11,16 +11,15 @@ from scipy.stats import gamma as gamma_dist, lognorm
 plt.close("all")
 
 # ── Constants ─────────────────────────────────────────────────────────────────
+TRAIN_START_DATE    = "2026-03-19"   # training window start (inclusive)
 TRAIN_END_DATE      = "2026-03-25"   # training window end (inclusive)
-TRAIN_N_DAYS        = 7              # days to look back from TRAIN_END_DATE
-EVAL_DATE           = "2026-04-01"   # future date for auction replay evaluation
+EVAL_START_DATE     = "2026-04-01"   # evaluation window start (inclusive)
+EVAL_END_DATE       = "2026-04-07"   # evaluation window end (inclusive)
 SAMPLE_PCT          = 100            # campaign-level sampling (MOD HASH < SAMPLE_PCT)
 MAX_RANK            = 5              # use auction_rank < MAX_RANK for training bids
 MIN_COHORT_BIDS     = 1000           # min bid rows per cohort to fit a distribution
 DIST_TYPE           = "gamma"        # "gamma" or "lognormal"
 SELLER_VALUE        = 0.0            # Myerson seller valuation (v_0), usually 0
-ROAS_SNAPSHOT_START = "2026-03-19"
-ROAS_SNAPSHOT_END   = "2026-03-25"
 
 # Default hard reserve / floor price per placement group (USD).
 # Used as truncation point in truncated MLE and as the minimum allowed reserve.
@@ -107,7 +106,7 @@ WHERE acd.event_date BETWEEN '{train_start_date}' AND '{train_end_date}'
 """
 
 # ── Evaluation SQL ────────────────────────────────────────────────────────────
-# Clicked winners (rank=0) on EVAL_DATE with all pricing and cohort fields.
+# Clicked winners (rank=0) over the eval date range with all pricing and cohort fields.
 # Identical structure to segment_placement_ctx.py QUERY.
 EVAL_QUERY = """
 WITH winners AS (
@@ -125,7 +124,7 @@ WITH winners AS (
         COALESCE(acd.l1_category_id::VARCHAR, 'Unknown')                           AS l1_category_id,
         COALESCE(acd.collection_id, 'Unknown')                                     AS collection_id
     FROM edw.ads.ads_auction_candidates_event_delta acd
-    WHERE acd.event_date = '{eval_date}'
+    WHERE acd.event_date BETWEEN '{eval_start_date}' AND '{eval_end_date}'
       AND acd.CURRENCY_ISO_TYPE IN ('USD')
       AND acd.placement LIKE '%SPONSORED_PRODUCTS%'
       AND acd.auction_rank = 0
@@ -137,7 +136,7 @@ clicked AS (
         ad_auction_id,
         MIN(event_timestamp) AS event_timestamp
     FROM proddb.public.fact_item_card_click_dedup
-    WHERE event_date = '{eval_date}'
+    WHERE event_date BETWEEN '{eval_start_date}' AND '{eval_end_date}'
       AND is_sponsored = 1
       AND is_cpc = 1
       AND ad_auction_id IS NOT NULL
@@ -185,22 +184,15 @@ HAVING SUM(TOTAL_CX_AD_FEE_LOCAL) > 0
 
 
 # ── Data fetchers ─────────────────────────────────────────────────────────────
-def _train_date_range(end_date: str = TRAIN_END_DATE, n_days: int = TRAIN_N_DAYS):
-    end = date.fromisoformat(end_date)
-    start = end - timedelta(days=n_days - 1)
-    return start.isoformat(), end.isoformat()
-
-
 def fetch_train_data(
+    train_start_date: str = TRAIN_START_DATE,
     train_end_date: str = TRAIN_END_DATE,
-    n_days: int = TRAIN_N_DAYS,
     sample_pct: int = SAMPLE_PCT,
     max_rank: int = MAX_RANK,
 ) -> pd.DataFrame:
-    train_start, train_end = _train_date_range(train_end_date, n_days)
     query = TRAINING_QUERY.format(
-        train_start_date=train_start,
-        train_end_date=train_end,
+        train_start_date=train_start_date,
+        train_end_date=train_end_date,
         max_rank=max_rank,
         sample_pct=sample_pct,
     )
@@ -217,8 +209,16 @@ def fetch_train_data(
     return df
 
 
-def fetch_eval_data(eval_date: str = EVAL_DATE, sample_pct: int = SAMPLE_PCT) -> pd.DataFrame:
-    query = EVAL_QUERY.format(eval_date=eval_date, sample_pct=sample_pct)
+def fetch_eval_data(
+    eval_start_date: str = EVAL_START_DATE,
+    eval_end_date: str = EVAL_END_DATE,
+    sample_pct: int = SAMPLE_PCT,
+) -> pd.DataFrame:
+    query = EVAL_QUERY.format(
+        eval_start_date=eval_start_date,
+        eval_end_date=eval_end_date,
+        sample_pct=sample_pct,
+    )
     with get_connection() as conn:
         cursor = conn.cursor()
         cursor.execute(query)
@@ -233,7 +233,7 @@ def fetch_eval_data(eval_date: str = EVAL_DATE, sample_pct: int = SAMPLE_PCT) ->
     return df
 
 
-def fetch_budget(budget_date: str = EVAL_DATE) -> pd.DataFrame:
+def fetch_budget(budget_date: str = EVAL_END_DATE) -> pd.DataFrame:
     query = BUDGET_QUERY.format(budget_date=budget_date)
     with get_connection() as conn:
         cursor = conn.cursor()
@@ -249,8 +249,8 @@ def fetch_budget(budget_date: str = EVAL_DATE) -> pd.DataFrame:
 
 
 def fetch_roas(
-    start_date: str = ROAS_SNAPSHOT_START,
-    end_date: str = ROAS_SNAPSHOT_END,
+    start_date: str = EVAL_START_DATE,
+    end_date: str = EVAL_END_DATE,
 ) -> pd.DataFrame:
     query = ROAS_QUERY.format(start_date=start_date, end_date=end_date)
     with get_connection() as conn:
@@ -559,8 +559,8 @@ def compute_roas(
     summary: pd.DataFrame,
     eval_df: pd.DataFrame,
     roas_df: pd.DataFrame,
-    roas_start: str = ROAS_SNAPSHOT_START,
-    roas_end: str = ROAS_SNAPSHOT_END,
+    roas_start: str = EVAL_START_DATE,
+    roas_end: str = EVAL_END_DATE,
 ) -> pd.DataFrame:
     """
     Attach ROAS before/after columns to summary (mirrors segment_placement_ctx.py).
@@ -620,7 +620,7 @@ def plot_revenue_lift(summary: pd.DataFrame) -> None:
     fig, axes = plt.subplots(1, 4, figsize=(28, 10))
     fig.suptitle(
         f"Revenue Lift by Cohort — Myerson Optimal Reserve (top {TOP_N} per group)\n"
-        f"(SP clicked winners, budget-aware, eval={EVAL_DATE})",
+        f"(SP clicked winners, budget-aware, eval={EVAL_START_DATE}–{EVAL_END_DATE})",
         fontsize=15,
     )
     for ax, pg in zip(axes, PLACEMENT_GROUP_ORDER):
@@ -651,7 +651,7 @@ def plot_roas(summary: pd.DataFrame) -> None:
     fig, axes = plt.subplots(1, 4, figsize=(28, 10))
     fig.suptitle(
         f"ROAS Before vs After — Myerson Optimal Reserve (top {TOP_N} per group)\n"
-        f"(SP clicked winners, budget-aware, eval={EVAL_DATE})",
+        f"(SP clicked winners, budget-aware, eval={EVAL_START_DATE}–{EVAL_END_DATE})",
         fontsize=15,
     )
     for ax, pg in zip(axes, PLACEMENT_GROUP_ORDER):
@@ -679,7 +679,7 @@ def plot_cpc(summary: pd.DataFrame) -> None:
     fig, axes = plt.subplots(1, 4, figsize=(28, 10))
     fig.suptitle(
         f"Avg CPC Before vs After — Myerson Optimal Reserve (top {TOP_N} per group)\n"
-        f"(SP clicked winners, budget-aware, eval={EVAL_DATE})",
+        f"(SP clicked winners, budget-aware, eval={EVAL_START_DATE}–{EVAL_END_DATE})",
         fontsize=15,
     )
     for ax, pg in zip(axes, PLACEMENT_GROUP_ORDER):
@@ -724,9 +724,8 @@ def plot_optimal_reserves(optimal_hr_map: dict) -> None:
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────
-#%% Training: fetch auction candidates from clicked auctions over N-day window
-train_start, train_end = _train_date_range()
-print(f"Training window: {train_start} – {train_end}  ({TRAIN_N_DAYS} days)")
+#%% Training: fetch auction candidates from clicked auctions over training window
+print(f"Training window: {TRAIN_START_DATE} – {TRAIN_END_DATE}")
 print(f"Distribution: {DIST_TYPE}  |  MIN_COHORT_BIDS={MIN_COHORT_BIDS}  |  MAX_RANK={MAX_RANK}")
 
 # train_df = fetch_train_data()
@@ -749,8 +748,8 @@ for pg in PLACEMENT_GROUP_ORDER:
             f"median=${np.median(r_stars):.3f}"
         )
 
-#%% Evaluation: fetch clicked winners from future eval date
-print(f"\nFetching evaluation data for {EVAL_DATE}...")
+#%% Evaluation: fetch clicked winners from eval date range
+print(f"\nFetching evaluation data ({EVAL_START_DATE} – {EVAL_END_DATE})...")
 # eval_df = fetch_eval_data()
 # eval_df.to_pickle("data/simulation_ctx_eval_df.pkl")
 eval_df = pd.read_pickle("data/simulation_ctx_eval_df.pkl")
@@ -758,14 +757,14 @@ print(f"  Eval clicked winners: {len(eval_df):,}")
 print(f"  Eval total CPC ($):   {eval_df['cpc_dollars'].sum():,.2f}")
 
 #%% Fetch budget and ROAS data
-print(f"\nFetching campaign daily budgets for {EVAL_DATE}...")
+print(f"\nFetching campaign daily budgets for {EVAL_END_DATE}...")
 # budget_df = fetch_budget()
 # budget_df.to_pickle("data/simulation_ctx_budget_df.pkl")
 budget_df = pd.read_pickle("data/simulation_ctx_budget_df.pkl")
 budget_map = budget_df.set_index("campaign_id")["campaign_daily_budget_dollars"].to_dict()
 print(f"  Campaigns with budget: {len(budget_map):,}")
 
-print(f"\nFetching ROAS data ({ROAS_SNAPSHOT_START} – {ROAS_SNAPSHOT_END})...")
+print(f"\nFetching ROAS data ({EVAL_START_DATE} – {EVAL_END_DATE})...")
 # roas_df = fetch_roas()
 # roas_df.to_pickle("data/simulation_ctx_roas_df.pkl")
 roas_df = pd.read_pickle("data/simulation_ctx_roas_df.pkl")
