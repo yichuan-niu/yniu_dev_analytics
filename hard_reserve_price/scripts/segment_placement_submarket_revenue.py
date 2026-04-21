@@ -10,7 +10,7 @@ plt.close("all")
 EVENT_DATE             = "2026-03-25"
 SAMPLE_PCT             = 100   # campaign-level sampling
 MAX_RESERVE_INCREMENT  = 5.0
-MIN_SUBMARKET_CLICKS   = 200   # skip submarket-placement cohorts with fewer clicks than this threshold
+MIN_SUBMARKET_CLICKS   = 50   # skip submarket-placement cohorts with fewer clicks than this threshold
 ROAS_SNAPSHOT_START    = "2026-03-19"
 ROAS_SNAPSHOT_END      = "2026-03-25"
 
@@ -291,8 +291,8 @@ def plot_heatmaps(summary: pd.DataFrame, event_date: str = EVENT_DATE) -> None:
     pivot_lift  = summary.pivot(index="submarket_name", columns="placement_group", values="total_lift_pct")
     pivot_delta = summary.pivot(index="submarket_name", columns="placement_group", values="best_delta")
 
-    # order rows by total revenue lift (sum across placement groups) descending
-    row_order   = pivot_lift.sum(axis=1).sort_values(ascending=False).index
+    # order rows by total revenue lift (sum across placement groups) descending, top 20 only
+    row_order   = pivot_lift.sum(axis=1).sort_values(ascending=False).index[:30]
     pivot_lift  = pivot_lift.reindex(row_order)
     pivot_delta = pivot_delta.reindex(row_order)
 
@@ -327,7 +327,7 @@ def plot_roas_heatmaps(summary: pd.DataFrame, event_date: str = EVENT_DATE) -> N
     pivot_change = summary.pivot(index="submarket_name", columns="placement_group", values="roas_change")
 
     # order rows by total revenue lift (sum across placement groups) descending
-    row_order    = summary.groupby("submarket_name")["total_lift_pct"].sum().sort_values(ascending=False).index
+    row_order    = summary.groupby("submarket_name")["total_lift_pct"].sum().sort_values(ascending=False).index[:30]
     pivot_before = pivot_before.reindex(row_order)
     pivot_after  = pivot_after.reindex(row_order)
     pivot_change = pivot_change.reindex(row_order)
@@ -530,7 +530,7 @@ def plot_cpc_heatmaps(summary: pd.DataFrame, event_date: str = EVENT_DATE) -> No
     pivot_delta  = df.pivot(index="submarket_name", columns="placement_group", values="avg_cpc_delta")
 
     # order rows by total revenue lift (sum across placement groups) descending
-    row_order    = df.groupby("submarket_name")["total_lift_pct"].sum().sort_values(ascending=False).index
+    row_order    = df.groupby("submarket_name")["total_lift_pct"].sum().sort_values(ascending=False).index[:30]
     pivot_before = pivot_before.reindex(row_order)
     pivot_after  = pivot_after.reindex(row_order)
     pivot_delta  = pivot_delta.reindex(row_order)
