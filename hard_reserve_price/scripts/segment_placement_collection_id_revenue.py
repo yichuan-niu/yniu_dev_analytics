@@ -272,7 +272,7 @@ def compute_revenue_lift_segment(
 
 
 # ── Plot helpers ──────────────────────────────────────────────────────────────
-TOP_N = 20  # top N cohorts per placement group for plotting
+TOP_N = 30  # top N cohorts per placement group for plotting
 
 
 def _top_cohorts(summary: pd.DataFrame, pg: str, n: int = TOP_N) -> pd.DataFrame:
