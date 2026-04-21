@@ -8,12 +8,12 @@ import snowflake.connector
 plt.close("all")
 
 # ── Constants ──────────────────────────────────────────────────────────────────
-EVENT_DATE            = "2026-03-25"
-SAMPLE_PCT            = 100   # campaign-level sampling
-MAX_RESERVE_INCREMENT = 5.0
-MIN_COHORT_ROWS       = 50    # skip cohorts with too few clicked-winner rows
-ROAS_SNAPSHOT_START   = "2026-03-19"
-ROAS_SNAPSHOT_END     = "2026-03-25"
+EVENT_DATE             = "2026-03-25"
+SAMPLE_PCT             = 100   # campaign-level sampling
+MAX_RESERVE_INCREMENT  = 5.0
+MIN_SUBMARKET_CLICKS   = 100   # skip submarket-placement cohorts with fewer clicks than this threshold
+ROAS_SNAPSHOT_START    = "2026-03-19"
+ROAS_SNAPSHOT_END      = "2026-03-25"
 
 PLACEMENT_GROUPS = {
     "Search": [
@@ -51,10 +51,16 @@ def get_connection() -> snowflake.connector.SnowflakeConnection:
 
 
 # ── Query ──────────────────────────────────────────────────────────────────────
-# Adds placement and L1 category (via LEFT JOIN on CPG_PRODUCT_INDEX.dd_sic).
-# NULL l1_category rows (unmatched dd_sic) are labeled 'Unknown'.
+# Joins with geo_intelligence.public.maindb_submarket to get submarket_name.
+# NULL submarket rows (unmatched submarket_id) are labeled 'Unknown'.
 QUERY = """
-WITH winners AS (
+WITH submarkets AS (
+    SELECT
+        t1.id   AS submarket_id,
+        t1.name AS submarket_name
+    FROM geo_intelligence.public.maindb_submarket t1
+),
+winners AS (
     SELECT
         acd.auction_id,
         acd.campaign_id,
@@ -65,9 +71,9 @@ WITH winners AS (
         GET(PARSE_JSON(acd.pricing_metadata), 'hardReserve')::INT / 100.0          AS hard_reserve_dollars,
         GET(PARSE_JSON(acd.pricing_metadata), 'softReserveBeta')::FLOAT
             * GET(PARSE_JSON(acd.pricing_metadata), 'nextBid')::INT / 100.0        AS soft_reserve_dollars,
-        COALESCE(ci.L1_CATEGORY_NAME, 'Unknown')                                   AS l1_category
+        COALESCE(sm.submarket_name, 'Unknown')                                     AS submarket_name
     FROM edw.ads.ads_auction_candidates_event_delta acd
-    LEFT JOIN EDW.ADXP.CPG_PRODUCT_INDEX ci ON acd.dd_sic = ci.dd_sic
+    LEFT JOIN submarkets sm ON acd.submarket_id = sm.submarket_id
     WHERE acd.event_date = '{event_date}'
       AND acd.CURRENCY_ISO_TYPE IN ('USD')
       AND acd.placement LIKE '%SPONSORED_PRODUCTS%'
@@ -90,7 +96,7 @@ clicked AS (
 SELECT
     winners.campaign_id,
     winners.placement,
-    winners.l1_category,
+    winners.submarket_name,
     auction_bid_dollars,
     cpc_dollars,
     raw_gsp_dollars,
@@ -111,7 +117,7 @@ GROUP BY campaign_id
 """
 
 # Returns total attributed sales and total ad fee per campaign over a snapshot window.
-# Used to compute before/after ROAS per (L1 category, placement group) cohort.
+# Used to compute before/after ROAS per (submarket_name, placement group) cohort.
 ROAS_QUERY = """
 SELECT
     CAMPAIGN_ID,
@@ -121,7 +127,7 @@ FROM EDW.ADS.FACT_CPG_CPC_CAMPAIGN_PERFORMANCE
 WHERE SNAPSHOT_DATE BETWEEN '{start_date}' AND '{end_date}'
   AND TIMEZONE_TYPE = 'utc'
   AND DAYPART_NAME = 'day'
-  AND REPORT_TYPE   = '[brand_cohorts] campaign' 
+  AND REPORT_TYPE   = '[brand_cohorts] campaign'
 GROUP BY CAMPAIGN_ID
 HAVING SUM(TOTAL_CX_AD_FEE_LOCAL) > 0
 """
@@ -283,8 +289,8 @@ def _draw_heatmap(ax: plt.Axes, pivot: pd.DataFrame, title: str, fmt: str, cmap:
 
 
 def plot_heatmaps(summary: pd.DataFrame, event_date: str = EVENT_DATE) -> None:
-    pivot_lift  = summary.pivot(index="l1_category", columns="placement_group", values="total_lift_pct")
-    pivot_delta = summary.pivot(index="l1_category", columns="placement_group", values="best_delta")
+    pivot_lift  = summary.pivot(index="submarket_name", columns="placement_group", values="total_lift_pct")
+    pivot_delta = summary.pivot(index="submarket_name", columns="placement_group", values="best_delta")
 
     n_rows = max(len(pivot_lift.index), len(pivot_delta.index))
     n_cols = max(len(pivot_lift.columns), len(pivot_delta.columns))
@@ -293,7 +299,7 @@ def plot_heatmaps(summary: pd.DataFrame, event_date: str = EVENT_DATE) -> None:
         figsize=(n_cols * 3.5, max(5, n_rows * 0.6)),
     )
     fig.suptitle(
-        f"Revenue Lift by L1 Category & Placement Group\n(SP clicked winners, budget-aware, {event_date})",
+        f"Revenue Lift by Submarket & Placement Group\n(SP clicked winners, budget-aware, {event_date})",
         fontsize=15,
     )
 
@@ -306,15 +312,15 @@ def plot_heatmaps(summary: pd.DataFrame, event_date: str = EVENT_DATE) -> None:
 
 def plot_roas_heatmaps(summary: pd.DataFrame, event_date: str = EVENT_DATE) -> None:
     """
-    Three side-by-side ROAS heatmaps per (L1 category, placement group):
+    Three side-by-side ROAS heatmaps per (submarket_name, placement group):
       Subplot 1: ROAS before hard reserve increment (current state)
       Subplot 2: ROAS after applying each cohort's best hard reserve increment
                  (sales unchanged; ad spend increases by lift_dollars)
       Subplot 3: ROAS delta (after − before)
     """
-    pivot_before = summary.pivot(index="l1_category", columns="placement_group", values="roas_before")
-    pivot_after  = summary.pivot(index="l1_category", columns="placement_group", values="roas_after")
-    pivot_change = summary.pivot(index="l1_category", columns="placement_group", values="roas_change")
+    pivot_before = summary.pivot(index="submarket_name", columns="placement_group", values="roas_before")
+    pivot_after  = summary.pivot(index="submarket_name", columns="placement_group", values="roas_after")
+    pivot_change = summary.pivot(index="submarket_name", columns="placement_group", values="roas_change")
 
     n_rows = max(len(pivot_before.index), len(pivot_after.index), len(pivot_change.index))
     n_cols = max(len(pivot_before.columns), len(pivot_after.columns), len(pivot_change.columns))
@@ -342,7 +348,7 @@ print("Fetching auction data from Snowflake (clicked winners only)...")
 df = fetch_data()
 df.to_pickle("data/segment_placement_submarket_revenue_df.pkl")
 
-# df = pd.read_pickle("data/segment_placement_L1_revenue_df.pkl")
+# df = pd.read_pickle("data/segment_placement_submarket_revenue_df.pkl")
 print(f"  Total clicked winners: {len(df):,}")
 print(f"  Total CPC ($):         {df['cpc_dollars'].sum():,.2f}")
 
@@ -357,9 +363,9 @@ print(f"  Campaigns with ROAS data: {len(roas_df):,}")
 #%%
 print(f"\nFetching campaign daily budgets for {EVENT_DATE}...")
 budget_df = fetch_budget()
-budget_df.to_pickle("data/segment_placement_submatket_budget_df.pkl")
+budget_df.to_pickle("data/segment_placement_submarket_budget_df.pkl")
 
-# budget_df = pd.read_pickle("data/segment_placement_submatket_budget_df.pkl")
+# budget_df = pd.read_pickle("data/segment_placement_submarket_budget_df.pkl")
 budget_map = budget_df.set_index("campaign_id")["campaign_daily_budget_dollars"].to_dict()
 print(f"  Campaigns with known budget: {len(budget_map):,}")
 
@@ -367,23 +373,23 @@ print(f"  Campaigns with known budget: {len(budget_map):,}")
 # Map placement strings to group names
 df["placement_group"] = df["placement"].map(PLACEMENT_TO_GROUP).fillna("Other")
 
-# Enumerate cohorts with enough data
+# Enumerate cohorts with enough clicks
 cohorts = (
-    df.groupby(["l1_category", "placement_group"])
+    df.groupby(["submarket_name", "placement_group"])
     .size()
     .reset_index(name="n_rows")
-    .query("n_rows >= @MIN_COHORT_ROWS")
-    .sort_values(["l1_category", "placement_group"])
+    .query("n_rows >= @MIN_SUBMARKET_CLICKS")
+    .sort_values(["submarket_name", "placement_group"])
     .reset_index(drop=True)
 )
-print(f"\n  Cohorts with >= {MIN_COHORT_ROWS} rows: {len(cohorts)}")
+print(f"\n  Cohorts with >= {MIN_SUBMARKET_CLICKS} clicks: {len(cohorts)}")
 
 #%%
 summary_rows = []
 for _, cohort in cohorts.iterrows():
-    l1 = cohort["l1_category"]
+    sm = cohort["submarket_name"]
     pg = cohort["placement_group"]
-    df_seg = df[(df["l1_category"] == l1) & (df["placement_group"] == pg)]
+    df_seg = df[(df["submarket_name"] == sm) & (df["placement_group"] == pg)]
 
     results, seg_cpc = compute_revenue_lift_segment(df_seg, budget_map, max_delta=MAX_RESERVE_INCREMENT)
     if results is None:
@@ -391,24 +397,24 @@ for _, cohort in cohorts.iterrows():
 
     best = results.loc[results["total_lift_pct"].idxmax()]
     summary_rows.append({
-        "l1_category":    l1,
+        "submarket_name":  sm,
         "placement_group": pg,
         "n_rows":          int(cohort["n_rows"]),
         "segment_cpc":     seg_cpc,
         "best_delta":      float(best["delta"]),
         "total_lift_pct":  float(best["total_lift_pct"]),
     })
-    print(f"  [{l1} / {pg}]  best Δ=${best['delta']:.2f}  lift={best['total_lift_pct']:.4f}%")
+    print(f"  [{sm} / {pg}]  best Δ=${best['delta']:.2f}  lift={best['total_lift_pct']:.4f}%")
 
 #%%
 summary = pd.DataFrame(summary_rows).sort_values("total_lift_pct", ascending=False).reset_index(drop=True)
 
-print("\nRevenue Lift by (L1 Category, Placement Group) — sorted by total lift:")
-print(f"{'L1 Category':<35} {'Placement Group':<15} {'Rows':>8} {'Best Δ ($)':>12} {'Total Lift (%)':>16}")
-print("-" * 92)
+print("\nRevenue Lift by (Submarket, Placement Group) — sorted by total lift:")
+print(f"{'Submarket':<40} {'Placement Group':<15} {'Rows':>8} {'Best Δ ($)':>12} {'Total Lift (%)':>16}")
+print("-" * 97)
 for _, row in summary.iterrows():
     print(
-        f"{row['l1_category']:<35} {row['placement_group']:<15}"
+        f"{row['submarket_name']:<40} {row['placement_group']:<15}"
         f" {row['n_rows']:>8,} {row['best_delta']:>12.2f} {row['total_lift_pct']:>16.4f}"
     )
 
@@ -417,7 +423,7 @@ for _, row in summary.iterrows():
 total_lift_dollars = (summary["total_lift_pct"] / 100 * summary["segment_cpc"]).sum()
 total_cpc_all = summary["segment_cpc"].sum()
 overall_lift_pct = total_lift_dollars / total_cpc_all * 100 if total_cpc_all > 0 else 0.0
-print(f"\n{'─' * 92}")
+print(f"\n{'─' * 97}")
 print(f"Overall total revenue lift (best Δ per cohort): {overall_lift_pct:.4f}%"
       f"  (${total_lift_dollars:,.2f} lift on ${total_cpc_all:,.2f} total CPC)")
 
@@ -442,10 +448,10 @@ _campaign_total_cpc = df.groupby("campaign_id")["cpc_dollars"].sum()
 
 roas_rows = []
 for _, row in summary.iterrows():
-    l1 = row["l1_category"]
+    sm = row["submarket_name"]
     pg = row["placement_group"]
 
-    cohort_df = df[(df["l1_category"] == l1) & (df["placement_group"] == pg)]
+    cohort_df = df[(df["submarket_name"] == sm) & (df["placement_group"] == pg)]
     cohort_cpc_by_campaign = cohort_df.groupby("campaign_id")["cpc_dollars"].sum()
     fractions = (cohort_cpc_by_campaign / _campaign_total_cpc.reindex(cohort_cpc_by_campaign.index)).fillna(1.0)
 
@@ -463,24 +469,24 @@ for _, row in summary.iterrows():
     roas_after  = cohort_sales / (cohort_ad_fee + lift_dollars) if (cohort_ad_fee + lift_dollars) > 0 else 0.0
 
     roas_rows.append({
-        "l1_category":    l1,
+        "submarket_name":  sm,
         "placement_group": pg,
-        "roas_before":    round(roas_before, 4),
-        "roas_after":     round(roas_after,  4),
-        "roas_change":    round(roas_after - roas_before, 4),
+        "roas_before":     round(roas_before, 4),
+        "roas_after":      round(roas_after,  4),
+        "roas_change":     round(roas_after - roas_before, 4),
     })
 
 roas_summary = pd.DataFrame(roas_rows)
-summary = summary.merge(roas_summary, on=["l1_category", "placement_group"], how="left")
+summary = summary.merge(roas_summary, on=["submarket_name", "placement_group"], how="left")
 
 print("\nROAS Before vs After (best Δ per cohort):")
-print(f"{'L1 Category':<35} {'Placement Group':<15} {'Best Δ ($)':>12} {'ROAS Before':>13} {'ROAS After':>12} {'ROAS Δ':>10}")
-print("-" * 102)
+print(f"{'Submarket':<40} {'Placement Group':<15} {'Best Δ ($)':>12} {'ROAS Before':>13} {'ROAS After':>12} {'ROAS Δ':>10}")
+print("-" * 107)
 for _, row in summary.sort_values("roas_before", ascending=False).iterrows():
     if pd.isna(row.get("roas_before")):
         continue
     print(
-        f"{row['l1_category']:<35} {row['placement_group']:<15}"
+        f"{row['submarket_name']:<40} {row['placement_group']:<15}"
         f" {row['best_delta']:>12.2f} {row['roas_before']:>13.4f}"
         f" {row['roas_after']:>12.4f} {row['roas_change']:>10.4f}"
     )
@@ -491,7 +497,7 @@ plot_roas_heatmaps(summary)
 #%%
 def plot_cpc_heatmaps(summary: pd.DataFrame, event_date: str = EVENT_DATE) -> None:
     """
-    Three side-by-side avg-CPC heatmaps per (L1 category, placement group):
+    Three side-by-side avg-CPC heatmaps per (submarket_name, placement group):
       Subplot 1: avg CPC before hard reserve increment  (segment_cpc / n_rows)
       Subplot 2: avg CPC after best hard reserve increment
                  ((segment_cpc + lift_dollars) / n_rows)
@@ -502,9 +508,9 @@ def plot_cpc_heatmaps(summary: pd.DataFrame, event_date: str = EVENT_DATE) -> No
     df["avg_cpc_after"]  = df["segment_cpc"] * (1 + df["total_lift_pct"] / 100) / df["n_rows"]
     df["avg_cpc_delta"]  = df["avg_cpc_after"] - df["avg_cpc_before"]
 
-    pivot_before = df.pivot(index="l1_category", columns="placement_group", values="avg_cpc_before")
-    pivot_after  = df.pivot(index="l1_category", columns="placement_group", values="avg_cpc_after")
-    pivot_delta  = df.pivot(index="l1_category", columns="placement_group", values="avg_cpc_delta")
+    pivot_before = df.pivot(index="submarket_name", columns="placement_group", values="avg_cpc_before")
+    pivot_after  = df.pivot(index="submarket_name", columns="placement_group", values="avg_cpc_after")
+    pivot_delta  = df.pivot(index="submarket_name", columns="placement_group", values="avg_cpc_delta")
 
     n_rows = max(len(p.index)   for p in [pivot_before, pivot_after, pivot_delta])
     n_cols = max(len(p.columns) for p in [pivot_before, pivot_after, pivot_delta])
@@ -529,27 +535,36 @@ def plot_cpc_heatmaps(summary: pd.DataFrame, event_date: str = EVENT_DATE) -> No
 plot_cpc_heatmaps(summary)
 
 #%%
-# ── Candy & Alcohol: revenue lift curve per placement group ────────────────────
+# ── Top 2 submarkets by revenue lift: lift curve per placement group ───────────
 SEGMENT_MAX_DELTA = 2.0
+top_submarkets = (
+    summary.groupby("submarket_name")["total_lift_pct"]
+    .max()
+    .nlargest(2)
+    .index
+    .tolist()
+)
 segment_specs = [
-    ("Candy",    cohorts[cohorts["l1_category"].str.lower().str.contains("candy")]),
-    ("Alcohol",  cohorts[cohorts["l1_category"].str.lower().str.contains("alcohol")]),
+    (sm, cohorts[cohorts["submarket_name"] == sm])
+    for sm in top_submarkets
 ]
 
-fig, axes = plt.subplots(1, 2, figsize=(18, 5), sharey=False)
+fig, axes = plt.subplots(1, len(segment_specs), figsize=(9 * len(segment_specs), 5), sharey=False)
+if len(segment_specs) == 1:
+    axes = [axes]
 fig.suptitle(f"Revenue Lift vs Hard Reserve Increment\n(SP clicked winners, budget-aware, {EVENT_DATE})", fontsize=14)
 
 for ax, (label, seg_cohorts) in zip(axes, segment_specs):
     for _, cohort in seg_cohorts.iterrows():
         pg = cohort["placement_group"]
-        df_seg = df[(df["l1_category"] == cohort["l1_category"]) & (df["placement_group"] == pg)]
+        df_seg = df[(df["submarket_name"] == cohort["submarket_name"]) & (df["placement_group"] == pg)]
         results, _ = compute_revenue_lift_segment(df_seg, budget_map, max_delta=SEGMENT_MAX_DELTA)
         if results is None:
             continue
         ax.plot(results["delta"], results["total_lift_pct"], linewidth=2, label=pg)
     ax.set_xlabel("Hard Reserve Increment (Δ, $)", fontsize=12)
     ax.set_ylabel("Revenue Lift (%)", fontsize=12)
-    ax.set_title(f"{label} L1 Category", fontsize=13)
+    ax.set_title(label, fontsize=13)
     ax.set_xticks(np.arange(0, SEGMENT_MAX_DELTA + 0.1, 0.1))
     ax.set_xlim(0, SEGMENT_MAX_DELTA)
     ax.axhline(0, color="gray", linewidth=0.8, linestyle="--")
@@ -561,15 +576,15 @@ plt.show()
 
 
 #%%
-# ── Debug: per-placement breakdown for given L1 categories ────────────────────
-def debug_cohort(l1_categories: list) -> None:
+# ── Debug: per-placement breakdown for given submarkets ───────────────────────
+def debug_cohort(submarket_names: list) -> None:
     """
-    For each L1 category in l1_categories, print a per-placement breakdown:
-      - Category sales ($)
-      - Category ad fee before / after hard reserve increment ($)
+    For each submarket in submarket_names, print a per-placement breakdown:
+      - Submarket sales ($)
+      - Submarket ad fee before / after hard reserve increment ($)
       - ROAS before / after
       - Avg CPC before / after ($)
-      - Category clicks (n_rows)
+      - Submarket clicks (n_rows)
     """
     _roas_lookup = roas_df.set_index("campaign_id")
     cols = (
@@ -578,20 +593,20 @@ def debug_cohort(l1_categories: list) -> None:
         f" {'AvgCPC Bef':>11} {'AvgCPC Aft':>11} {'Clicks':>8}"
     )
 
-    for l1 in l1_categories:
-        rows = summary[summary["l1_category"] == l1].sort_values("placement_group")
+    for sm in submarket_names:
+        rows = summary[summary["submarket_name"] == sm].sort_values("placement_group")
         if rows.empty:
-            print(f"\nNo data for: {l1}")
+            print(f"\nNo data for: {sm}")
             continue
 
         print(f"\n{'=' * len(cols)}")
-        print(f"L1 Category: {l1}")
+        print(f"Submarket: {sm}")
         print(cols)
         print("-" * len(cols))
 
         for _, row in rows.iterrows():
             pg = row["placement_group"]
-            cohort_df = df[(df["l1_category"] == l1) & (df["placement_group"] == pg)]
+            cohort_df = df[(df["submarket_name"] == sm) & (df["placement_group"] == pg)]
             cohort_cpc_by_campaign = cohort_df.groupby("campaign_id")["cpc_dollars"].sum()
             fractions = (cohort_cpc_by_campaign / _campaign_total_cpc.reindex(cohort_cpc_by_campaign.index)).fillna(1.0)
 
@@ -614,4 +629,4 @@ def debug_cohort(l1_categories: list) -> None:
             )
 
 
-debug_cohort(["Candy", "Pet Care"])
+debug_cohort(top_submarkets)
