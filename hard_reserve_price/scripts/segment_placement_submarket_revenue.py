@@ -423,7 +423,7 @@ summary = (
     .reset_index(drop=True)
 )
 # Only retain cohorts with positive revenue lift for all downstream analysis and plots
-summary = summary[summary["total_lift_pct"] > 0].reset_index(drop=True)
+# summary = summary[summary["total_lift_pct"] > 0].reset_index(drop=True)
 print(f"  Cohorts with positive revenue lift: {len(summary)}")
 
 print("\nRevenue Lift by (Submarket, Placement Group) — sorted by total lift:")
