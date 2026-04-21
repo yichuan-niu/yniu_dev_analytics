@@ -348,27 +348,30 @@ def plot_roas_heatmaps(summary: pd.DataFrame, event_date: str = EVENT_DATE) -> N
 # ── Main ───────────────────────────────────────────────────────────────────────
 #%%
 print("Fetching auction data from Snowflake (clicked winners only)...")
-# df = fetch_data()
-# df.to_pickle("data/segment_placement_collection_id_revenue_df.pkl")
+df = fetch_data()
+df.to_pickle("data/segment_placement_collection_id_revenue_df.pkl")
 
-df = pd.read_pickle("data/segment_placement_collection_id_revenue_df.pkl")
+# df = pd.read_pickle("data/segment_placement_collection_id_revenue_df.pkl")
+
 print(f"  Total clicked winners: {len(df):,}")
 print(f"  Total CPC ($):         {df['cpc_dollars'].sum():,.2f}")
 
 #%%
 print(f"\nFetching ROAS data ({ROAS_SNAPSHOT_START} – {ROAS_SNAPSHOT_END})...")
-# roas_df = fetch_roas()
-# roas_df.to_pickle("data/segment_placement_collection_id_roas_df.pkl")
+roas_df = fetch_roas()
+roas_df.to_pickle("data/segment_placement_collection_id_roas_df.pkl")
 
-roas_df = pd.read_pickle("data/segment_placement_collection_id_roas_df.pkl")
+# roas_df = pd.read_pickle("data/segment_placement_collection_id_roas_df.pkl")
+
 print(f"  Campaigns with ROAS data: {len(roas_df):,}")
 
 #%%
 print(f"\nFetching campaign daily budgets for {EVENT_DATE}...")
-# budget_df = fetch_budget()
-# budget_df.to_pickle("data/segment_placement_collection_id_budget_df.pkl")
+budget_df = fetch_budget()
+budget_df.to_pickle("data/segment_placement_collection_id_budget_df.pkl")
 
-budget_df = pd.read_pickle("data/segment_placement_collection_id_budget_df.pkl")
+# budget_df = pd.read_pickle("data/segment_placement_collection_id_budget_df.pkl")
+
 budget_map = budget_df.set_index("campaign_id")["campaign_daily_budget_dollars"].to_dict()
 print(f"  Campaigns with known budget: {len(budget_map):,}")
 
@@ -591,58 +594,3 @@ plt.tight_layout()
 plt.show()
 
 
-#%%
-# ── Debug: per-placement breakdown for given collections ──────────────────────
-def debug_cohort(collection_ids: list) -> None:
-    """
-    For each collection in collection_ids, print a per-placement breakdown:
-      - Collection sales ($)
-      - Collection ad fee before / after hard reserve increment ($)
-      - ROAS before / after
-      - Avg CPC before / after ($)
-      - Collection clicks (n_rows)
-    """
-    _roas_lookup = roas_df.set_index("campaign_id")
-    cols = (
-        f"{'Placement':<16} {'Sales ($)':>12} {'AdFee Before':>13} {'AdFee After':>12}"
-        f" {'ROAS Bef':>10} {'ROAS Aft':>10}"
-        f" {'AvgCPC Bef':>11} {'AvgCPC Aft':>11} {'Clicks':>8}"
-    )
-
-    for cn in collection_ids:
-        rows = summary[summary["collection_id"] == cn].sort_values("placement_group")
-        if rows.empty:
-            print(f"\nNo data for: {cn}")
-            continue
-
-        print(f"\n{'=' * len(cols)}")
-        print(f"Collection: {cn}")
-        print(cols)
-        print("-" * len(cols))
-
-        for _, row in rows.iterrows():
-            pg = row["placement_group"]
-            cohort_df = df[(df["collection_id"] == cn) & (df["placement_group"] == pg)]
-            cohort_cpc_by_campaign = cohort_df.groupby("campaign_id")["cpc_dollars"].sum()
-            fractions = (cohort_cpc_by_campaign / _campaign_total_cpc.reindex(cohort_cpc_by_campaign.index)).fillna(1.0)
-
-            cohort_roas = _roas_lookup.reindex(fractions.index).dropna(subset=["total_ad_fee_usd"])
-            cohort_roas = cohort_roas.join(fractions.rename("fraction"), how="left").fillna({"fraction": 1.0})
-
-            cohort_sales  = (cohort_roas["total_attributed_sales_usd"] * cohort_roas["fraction"]).sum() / _n_roas_days if not cohort_roas.empty else float("nan")
-            cohort_ad_fee = (cohort_roas["total_ad_fee_usd"]           * cohort_roas["fraction"]).sum() / _n_roas_days if not cohort_roas.empty else float("nan")
-            lift_dollars  = row["total_lift_pct"] / 100 * row["segment_cpc"]
-            ad_fee_after  = cohort_ad_fee + lift_dollars
-            roas_before   = cohort_sales / cohort_ad_fee if cohort_ad_fee > 0 else float("nan")
-            roas_after    = cohort_sales / ad_fee_after  if ad_fee_after  > 0 else float("nan")
-            avg_cpc_before = row["segment_cpc"] / row["n_rows"]
-            avg_cpc_after  = row["segment_cpc"] * (1 + row["total_lift_pct"] / 100) / row["n_rows"]
-
-            print(
-                f"{pg:<16} {cohort_sales:>12.2f} {cohort_ad_fee:>13.2f} {ad_fee_after:>12.2f}"
-                f" {roas_before:>10.4f} {roas_after:>10.4f}"
-                f" {avg_cpc_before:>11.4f} {avg_cpc_after:>11.4f} {row['n_rows']:>8,}"
-            )
-
-
-debug_cohort(top_collections)
