@@ -345,27 +345,27 @@ def plot_roas_heatmaps(summary: pd.DataFrame, event_date: str = EVENT_DATE) -> N
 # ── Main ───────────────────────────────────────────────────────────────────────
 #%%
 print("Fetching auction data from Snowflake (clicked winners only)...")
-df = fetch_data()
-df.to_pickle("data/segment_placement_submarket_revenue_df.pkl")
+# df = fetch_data()
+# df.to_pickle("data/segment_placement_submarket_revenue_df.pkl")
 
-# df = pd.read_pickle("data/segment_placement_submarket_revenue_df.pkl")
+df = pd.read_pickle("data/segment_placement_submarket_revenue_df.pkl")
 print(f"  Total clicked winners: {len(df):,}")
 print(f"  Total CPC ($):         {df['cpc_dollars'].sum():,.2f}")
 
 #%%
 print(f"\nFetching ROAS data ({ROAS_SNAPSHOT_START} – {ROAS_SNAPSHOT_END})...")
-roas_df = fetch_roas()
-roas_df.to_pickle("data/segment_placement_submarket_roas_df.pkl")
+# roas_df = fetch_roas()
+# roas_df.to_pickle("data/segment_placement_submarket_roas_df.pkl")
 
-# roas_df = pd.read_pickle("data/segment_placement_submarket_roas_df.pkl")
+roas_df = pd.read_pickle("data/segment_placement_submarket_roas_df.pkl")
 print(f"  Campaigns with ROAS data: {len(roas_df):,}")
 
 #%%
 print(f"\nFetching campaign daily budgets for {EVENT_DATE}...")
-budget_df = fetch_budget()
-budget_df.to_pickle("data/segment_placement_submarket_budget_df.pkl")
+# budget_df = fetch_budget()
+# budget_df.to_pickle("data/segment_placement_submarket_budget_df.pkl")
 
-# budget_df = pd.read_pickle("data/segment_placement_submarket_budget_df.pkl")
+budget_df = pd.read_pickle("data/segment_placement_submarket_budget_df.pkl")
 budget_map = budget_df.set_index("campaign_id")["campaign_daily_budget_dollars"].to_dict()
 print(f"  Campaigns with known budget: {len(budget_map):,}")
 
@@ -407,7 +407,14 @@ for _, cohort in cohorts.iterrows():
     print(f"  [{sm} / {pg}]  best Δ=${best['delta']:.2f}  lift={best['total_lift_pct']:.4f}%")
 
 #%%
-summary = pd.DataFrame(summary_rows).sort_values("total_lift_pct", ascending=False).reset_index(drop=True)
+summary = (
+    pd.DataFrame(summary_rows)
+    .sort_values("total_lift_pct", ascending=False)
+    .reset_index(drop=True)
+)
+# Only retain cohorts with positive revenue lift for all downstream analysis and plots
+summary = summary[summary["total_lift_pct"] > 0].reset_index(drop=True)
+print(f"  Cohorts with positive revenue lift: {len(summary)}")
 
 print("\nRevenue Lift by (Submarket, Placement Group) — sorted by total lift:")
 print(f"{'Submarket':<40} {'Placement Group':<15} {'Rows':>8} {'Best Δ ($)':>12} {'Total Lift (%)':>16}")
