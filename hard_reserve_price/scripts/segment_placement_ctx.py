@@ -41,7 +41,7 @@ COHORT_DIM = {
     "Search":     "normalized_query",
     "Category":   "l1_category_id",
     "Collection": "collection_id",
-    "DoubleDash": None,
+    "DoubleDash": "hour_bucket",
 }
 PLACEMENT_GROUP_ORDER = ["Search", "Category", "Collection", "DoubleDash"]
 
@@ -412,10 +412,13 @@ print(f"  Campaigns with known budget: {len(budget_map):,}")
 # Map placement strings to group names
 df["placement_group"] = df["placement"].map(PLACEMENT_TO_GROUP).fillna("Other")
 
+# Hour bucket: hour of auction (0–23) derived from event_timestamp
+df["hour_bucket"] = df["event_timestamp"].dt.hour
+
 # Assign cohort_key per placement group's secondary dimension
 conditions = [df["placement_group"] == pg for pg in PLACEMENT_GROUP_ORDER]
 choices = [
-    df[COHORT_DIM[pg]] if COHORT_DIM[pg] else pg
+    df[COHORT_DIM[pg]]
     for pg in PLACEMENT_GROUP_ORDER
 ]
 df["cohort_key"] = np.select(conditions, choices, default="Other")
