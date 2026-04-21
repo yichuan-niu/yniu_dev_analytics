@@ -10,7 +10,7 @@ plt.close("all")
 EVENT_DATE             = "2026-03-25"
 SAMPLE_PCT             = 100   # campaign-level sampling
 MAX_RESERVE_INCREMENT  = 5.0
-MIN_COLLECTION_CLICKS  = 50   # skip collection-placement cohorts with fewer clicks than this threshold
+MIN_COLLECTION_CLICKS  = 100   # skip collection-placement cohorts with fewer clicks than this threshold
 ROAS_SNAPSHOT_START    = "2026-03-19"
 ROAS_SNAPSHOT_END      = "2026-03-25"
 
