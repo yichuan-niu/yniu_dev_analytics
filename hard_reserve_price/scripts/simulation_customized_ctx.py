@@ -812,3 +812,129 @@ plot_optimal_reserves(optimal_hr_map)
 plot_revenue_lift(summary)
 plot_roas(summary)
 plot_cpc(summary)
+
+#%% Monetization rate before / after
+# Monetization rate = sum(CPC paid) / sum(bid)
+# Build a per-row lookup: (placement_group, cohort_key) -> new_hr_applied
+hr_lookup = (
+    summary.set_index(["placement_group", "cohort_key"])["new_hr_applied"].to_dict()
+)
+
+# Tag eval_df with placement_group (already has cohort_key from the eval cell)
+def _pg(placement):
+    for pg, patterns in PLACEMENT_GROUPS.items():
+        if any(p in placement for p in patterns):
+            return pg
+    return None
+
+if "placement_group" not in eval_df.columns:
+    eval_df["placement_group"] = eval_df["placement"].apply(_pg)
+
+new_hr_vec = eval_df.apply(
+    lambda r: hr_lookup.get((r["placement_group"], r["cohort_key"]), FLOOR_PRICES.get(r["placement_group"], 0.0)),
+    axis=1,
+)
+
+bid = eval_df["auction_bid_dollars"]
+gsp = eval_df["gsp_dollars"]
+sr  = eval_df["soft_reserve_dollars"]
+cpc = eval_df["cpc_dollars"]
+
+new_cpc_vec = np.where(
+    bid < new_hr_vec,
+    0.0,
+    np.minimum(bid, np.maximum.reduce([gsp.values, sr.values, new_hr_vec.values])),
+)
+
+# ── Global monetization rate ──────────────────────────────────────────────────
+total_bid = bid.sum()
+mr_before_global = cpc.sum() / total_bid if total_bid > 0 else np.nan
+mr_after_global  = new_cpc_vec.sum() / total_bid if total_bid > 0 else np.nan
+
+print(f"\n{'─' * 55}")
+print(f"{'Monetization Rate (MR = CPC / bid)':^55}")
+print(f"{'─' * 55}")
+print(f"  Global MR before: {mr_before_global:.4%}")
+print(f"  Global MR after:  {mr_after_global:.4%}")
+print(f"  Global MR delta:  {mr_after_global - mr_before_global:+.4%}")
+print(f"{'─' * 55}")
+
+# ── Per-cohort monetization rate ──────────────────────────────────────────────
+eval_df["new_cpc"] = new_cpc_vec
+
+cohort_mr = (
+    eval_df.groupby(["placement_group", "cohort_key"])
+    .apply(lambda g: pd.Series({
+        "bid_sum":       g["auction_bid_dollars"].sum(),
+        "cpc_sum":       g["cpc_dollars"].sum(),
+        "new_cpc_sum":   g["new_cpc"].sum(),
+    }))
+    .reset_index()
+)
+cohort_mr["mr_before"] = cohort_mr["cpc_sum"]     / cohort_mr["bid_sum"]
+cohort_mr["mr_after"]  = cohort_mr["new_cpc_sum"] / cohort_mr["bid_sum"]
+cohort_mr["mr_delta"]  = cohort_mr["mr_after"] - cohort_mr["mr_before"]
+
+# Merge with summary for new_hr_applied / r_star
+cohort_mr = cohort_mr.merge(
+    summary[["placement_group", "cohort_key", "new_hr_applied", "r_star", "n_rows"]],
+    on=["placement_group", "cohort_key"],
+    how="left",
+)
+cohort_mr = cohort_mr.sort_values(["placement_group", "mr_delta"], ascending=[True, False])
+
+# Print per-placement-group table
+hdr = f"{'Cohort Key':<40} {'HR ($)':>8} {'MR Before':>10} {'MR After':>10} {'Delta':>8}"
+for pg in PLACEMENT_GROUP_ORDER:
+    sub = cohort_mr[cohort_mr["placement_group"] == pg].head(10)
+    if sub.empty:
+        continue
+    print(f"\n  ── {pg} {'─' * 63}")
+    print(f"  {hdr}")
+    for _, row in sub.iterrows():
+        print(
+            f"  {str(row['cohort_key']):<40}"
+            f" ${row['new_hr_applied']:>6.4f}"
+            f" {row['mr_before']:>10.4%}"
+            f" {row['mr_after']:>10.4%}"
+            f" {row['mr_delta']:>+8.4%}"
+        )
+
+# ── Plot: MR before / after per placement group ───────────────────────────────
+def plot_monetization_rate(cohort_mr, top_n=15):
+    fig, axes = plt.subplots(
+        1, len(PLACEMENT_GROUP_ORDER),
+        figsize=(5 * len(PLACEMENT_GROUP_ORDER), 6),
+    )
+    if len(PLACEMENT_GROUP_ORDER) == 1:
+        axes = [axes]
+
+    for ax, pg in zip(axes, PLACEMENT_GROUP_ORDER):
+        sub = (
+            cohort_mr[cohort_mr["placement_group"] == pg]
+            .nlargest(top_n, "mr_delta")
+            .sort_values("mr_delta")
+        )
+        if sub.empty:
+            ax.set_visible(False)
+            continue
+
+        labels = [str(ck)[:30] for ck in sub["cohort_key"]]
+        y = np.arange(len(labels))
+        bar_h = 0.35
+
+        ax.barh(y + bar_h / 2, sub["mr_before"], bar_h, label="MR Before", color="steelblue", alpha=0.8)
+        ax.barh(y - bar_h / 2, sub["mr_after"],  bar_h, label="MR After",  color="darkorange", alpha=0.8)
+
+        ax.set_yticks(y)
+        ax.set_yticklabels(labels, fontsize=8)
+        ax.xaxis.set_major_formatter(plt.FuncFormatter(lambda v, _: f"{v:.1%}"))
+        ax.set_xlabel("Monetization Rate (CPC / bid)")
+        ax.set_title(f"{pg} — Top {top_n} MR-increasing cohorts")
+        ax.legend(fontsize=8)
+
+    plt.suptitle("Monetization Rate Before vs After Myerson Optimal Hard Reserve", fontsize=11, y=1.01)
+    plt.tight_layout()
+    plt.show()
+
+plot_monetization_rate(cohort_mr)
