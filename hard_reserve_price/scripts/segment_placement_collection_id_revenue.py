@@ -50,16 +50,10 @@ def get_connection() -> snowflake.connector.SnowflakeConnection:
 
 
 # ── Query ──────────────────────────────────────────────────────────────────────
-# Joins with catalog_service_prod.public.custom_collection to get collection_name.
-# NULL collection rows (unmatched collection_id) are labeled 'Unknown'.
+# Uses collection_id directly from the auction table.
+# NULL collection_id rows are labeled 'Unknown'.
 QUERY = """
-WITH collections AS (
-    SELECT
-        collection_id   AS collection_id,
-        name AS collection_name
-    FROM catalog_service_prod.public.custom_collection
-),
-winners AS (
+WITH winners AS (
     SELECT
         acd.auction_id,
         acd.campaign_id,
@@ -70,9 +64,8 @@ winners AS (
         GET(PARSE_JSON(acd.pricing_metadata), 'hardReserve')::INT / 100.0          AS hard_reserve_dollars,
         GET(PARSE_JSON(acd.pricing_metadata), 'softReserveBeta')::FLOAT
             * GET(PARSE_JSON(acd.pricing_metadata), 'nextBid')::INT / 100.0        AS soft_reserve_dollars,
-        COALESCE(coll.collection_name, 'Unknown')                                  AS collection_name
+        COALESCE(acd.collection_id, 'Unknown')                                     AS collection_id
     FROM edw.ads.ads_auction_candidates_event_delta acd
-    LEFT JOIN collections coll ON TRY_CAST(acd.collection_id AS NUMBER) = coll.collection_id
     WHERE acd.event_date = '{event_date}'
       AND acd.CURRENCY_ISO_TYPE IN ('USD')
       AND acd.placement LIKE '%SPONSORED_PRODUCTS%'
@@ -95,7 +88,7 @@ clicked AS (
 SELECT
     winners.campaign_id,
     winners.placement,
-    winners.collection_name,
+    winners.collection_id,
     auction_bid_dollars,
     cpc_dollars,
     raw_gsp_dollars,
@@ -116,7 +109,7 @@ GROUP BY campaign_id
 """
 
 # Returns total attributed sales and total ad fee per campaign over a snapshot window.
-# Used to compute before/after ROAS per (collection_name, placement group) cohort.
+# Used to compute before/after ROAS per (collection_id, placement group) cohort.
 ROAS_QUERY = """
 SELECT
     CAMPAIGN_ID,
@@ -288,8 +281,8 @@ def _draw_heatmap(ax: plt.Axes, pivot: pd.DataFrame, title: str, fmt: str, cmap:
 
 
 def plot_heatmaps(summary: pd.DataFrame, event_date: str = EVENT_DATE) -> None:
-    pivot_lift  = summary.pivot(index="collection_name", columns="placement_group", values="total_lift_pct")
-    pivot_delta = summary.pivot(index="collection_name", columns="placement_group", values="best_delta")
+    pivot_lift  = summary.pivot(index="collection_id", columns="placement_group", values="total_lift_pct")
+    pivot_delta = summary.pivot(index="collection_id", columns="placement_group", values="best_delta")
 
     # order rows by total revenue lift (sum across placement groups) descending, top 20 only
     row_order   = pivot_lift.sum(axis=1).sort_values(ascending=False).index[:30]
@@ -303,7 +296,7 @@ def plot_heatmaps(summary: pd.DataFrame, event_date: str = EVENT_DATE) -> None:
         figsize=(n_cols * 3.5, max(5, n_rows * 0.6)),
     )
     fig.suptitle(
-        f"Revenue Lift by Collection & Placement Group\n(SP clicked winners, budget-aware, {event_date})",
+        f"Revenue Lift by Collection ID & Placement Group\n(SP clicked winners, budget-aware, {event_date})",
         fontsize=15,
     )
 
@@ -316,18 +309,18 @@ def plot_heatmaps(summary: pd.DataFrame, event_date: str = EVENT_DATE) -> None:
 
 def plot_roas_heatmaps(summary: pd.DataFrame, event_date: str = EVENT_DATE) -> None:
     """
-    Three side-by-side ROAS heatmaps per (collection_name, placement group):
+    Three side-by-side ROAS heatmaps per (collection_id, placement group):
       Subplot 1: ROAS before hard reserve increment (current state)
       Subplot 2: ROAS after applying each cohort's best hard reserve increment
                  (sales unchanged; ad spend increases by lift_dollars)
       Subplot 3: ROAS delta (after − before)
     """
-    pivot_before = summary.pivot(index="collection_name", columns="placement_group", values="roas_before")
-    pivot_after  = summary.pivot(index="collection_name", columns="placement_group", values="roas_after")
-    pivot_change = summary.pivot(index="collection_name", columns="placement_group", values="roas_change")
+    pivot_before = summary.pivot(index="collection_id", columns="placement_group", values="roas_before")
+    pivot_after  = summary.pivot(index="collection_id", columns="placement_group", values="roas_after")
+    pivot_change = summary.pivot(index="collection_id", columns="placement_group", values="roas_change")
 
     # order rows by total revenue lift (sum across placement groups) descending
-    row_order    = summary.groupby("collection_name")["total_lift_pct"].sum().sort_values(ascending=False).index[:30]
+    row_order    = summary.groupby("collection_id")["total_lift_pct"].sum().sort_values(ascending=False).index[:30]
     pivot_before = pivot_before.reindex(row_order)
     pivot_after  = pivot_after.reindex(row_order)
     pivot_change = pivot_change.reindex(row_order)
@@ -385,11 +378,11 @@ df["placement_group"] = df["placement"].map(PLACEMENT_TO_GROUP).fillna("Other")
 
 # Enumerate cohorts with enough clicks
 cohorts = (
-    df.groupby(["collection_name", "placement_group"])
+    df.groupby(["collection_id", "placement_group"])
     .size()
     .reset_index(name="n_rows")
     .query("n_rows >= @MIN_COLLECTION_CLICKS")
-    .sort_values(["collection_name", "placement_group"])
+    .sort_values(["collection_id", "placement_group"])
     .reset_index(drop=True)
 )
 print(f"\n  Cohorts with >= {MIN_COLLECTION_CLICKS} clicks: {len(cohorts)}")
@@ -397,9 +390,9 @@ print(f"\n  Cohorts with >= {MIN_COLLECTION_CLICKS} clicks: {len(cohorts)}")
 #%%
 summary_rows = []
 for _, cohort in cohorts.iterrows():
-    cn = cohort["collection_name"]
+    cn = cohort["collection_id"]
     pg = cohort["placement_group"]
-    df_seg = df[(df["collection_name"] == cn) & (df["placement_group"] == pg)]
+    df_seg = df[(df["collection_id"] == cn) & (df["placement_group"] == pg)]
 
     results, seg_cpc = compute_revenue_lift_segment(df_seg, budget_map, max_delta=MAX_RESERVE_INCREMENT)
     if results is None:
@@ -407,7 +400,7 @@ for _, cohort in cohorts.iterrows():
 
     best = results.loc[results["total_lift_pct"].idxmax()]
     summary_rows.append({
-        "collection_name":  cn,
+        "collection_id":  cn,
         "placement_group": pg,
         "n_rows":          int(cohort["n_rows"]),
         "segment_cpc":     seg_cpc,
@@ -426,12 +419,12 @@ summary = (
 # summary = summary[summary["total_lift_pct"] > 0].reset_index(drop=True)
 print(f"  Cohorts with positive revenue lift: {len(summary)}")
 
-print("\nRevenue Lift by (Collection, Placement Group) — sorted by total lift:")
-print(f"{'Collection':<40} {'Placement Group':<15} {'Rows':>8} {'Best Δ ($)':>12} {'Total Lift (%)':>16}")
+print("\nRevenue Lift by (Collection ID, Placement Group) — sorted by total lift:")
+print(f"{'Collection ID':<40} {'Placement Group':<15} {'Rows':>8} {'Best Δ ($)':>12} {'Total Lift (%)':>16}")
 print("-" * 97)
 for _, row in summary.iterrows():
     print(
-        f"{row['collection_name']:<40} {row['placement_group']:<15}"
+        f"{row['collection_id']:<40} {row['placement_group']:<15}"
         f" {row['n_rows']:>8,} {row['best_delta']:>12.2f} {row['total_lift_pct']:>16.4f}"
     )
 
@@ -465,10 +458,10 @@ _campaign_total_cpc = df.groupby("campaign_id")["cpc_dollars"].sum()
 
 roas_rows = []
 for _, row in summary.iterrows():
-    cn = row["collection_name"]
+    cn = row["collection_id"]
     pg = row["placement_group"]
 
-    cohort_df = df[(df["collection_name"] == cn) & (df["placement_group"] == pg)]
+    cohort_df = df[(df["collection_id"] == cn) & (df["placement_group"] == pg)]
     cohort_cpc_by_campaign = cohort_df.groupby("campaign_id")["cpc_dollars"].sum()
     fractions = (cohort_cpc_by_campaign / _campaign_total_cpc.reindex(cohort_cpc_by_campaign.index)).fillna(1.0)
 
@@ -486,7 +479,7 @@ for _, row in summary.iterrows():
     roas_after  = cohort_sales / (cohort_ad_fee + lift_dollars) if (cohort_ad_fee + lift_dollars) > 0 else 0.0
 
     roas_rows.append({
-        "collection_name":  cn,
+        "collection_id":  cn,
         "placement_group": pg,
         "roas_before":     round(roas_before, 4),
         "roas_after":      round(roas_after,  4),
@@ -494,16 +487,16 @@ for _, row in summary.iterrows():
     })
 
 roas_summary = pd.DataFrame(roas_rows)
-summary = summary.merge(roas_summary, on=["collection_name", "placement_group"], how="left")
+summary = summary.merge(roas_summary, on=["collection_id", "placement_group"], how="left")
 
 print("\nROAS Before vs After (best Δ per cohort):")
-print(f"{'Collection':<40} {'Placement Group':<15} {'Best Δ ($)':>12} {'ROAS Before':>13} {'ROAS After':>12} {'ROAS Δ':>10}")
+print(f"{'Collection ID':<40} {'Placement Group':<15} {'Best Δ ($)':>12} {'ROAS Before':>13} {'ROAS After':>12} {'ROAS Δ':>10}")
 print("-" * 107)
 for _, row in summary.sort_values("roas_before", ascending=False).iterrows():
     if pd.isna(row.get("roas_before")):
         continue
     print(
-        f"{row['collection_name']:<40} {row['placement_group']:<15}"
+        f"{row['collection_id']:<40} {row['placement_group']:<15}"
         f" {row['best_delta']:>12.2f} {row['roas_before']:>13.4f}"
         f" {row['roas_after']:>12.4f} {row['roas_change']:>10.4f}"
     )
@@ -514,7 +507,7 @@ plot_roas_heatmaps(summary)
 #%%
 def plot_cpc_heatmaps(summary: pd.DataFrame, event_date: str = EVENT_DATE) -> None:
     """
-    Three side-by-side avg-CPC heatmaps per (collection_name, placement group):
+    Three side-by-side avg-CPC heatmaps per (collection_id, placement group):
       Subplot 1: avg CPC before hard reserve increment  (segment_cpc / n_rows)
       Subplot 2: avg CPC after best hard reserve increment
                  ((segment_cpc + lift_dollars) / n_rows)
@@ -525,12 +518,12 @@ def plot_cpc_heatmaps(summary: pd.DataFrame, event_date: str = EVENT_DATE) -> No
     df["avg_cpc_after"]  = df["segment_cpc"] * (1 + df["total_lift_pct"] / 100) / df["n_rows"]
     df["avg_cpc_delta"]  = df["avg_cpc_after"] - df["avg_cpc_before"]
 
-    pivot_before = df.pivot(index="collection_name", columns="placement_group", values="avg_cpc_before")
-    pivot_after  = df.pivot(index="collection_name", columns="placement_group", values="avg_cpc_after")
-    pivot_delta  = df.pivot(index="collection_name", columns="placement_group", values="avg_cpc_delta")
+    pivot_before = df.pivot(index="collection_id", columns="placement_group", values="avg_cpc_before")
+    pivot_after  = df.pivot(index="collection_id", columns="placement_group", values="avg_cpc_after")
+    pivot_delta  = df.pivot(index="collection_id", columns="placement_group", values="avg_cpc_delta")
 
     # order rows by total revenue lift (sum across placement groups) descending
-    row_order    = df.groupby("collection_name")["total_lift_pct"].sum().sort_values(ascending=False).index[:30]
+    row_order    = df.groupby("collection_id")["total_lift_pct"].sum().sort_values(ascending=False).index[:30]
     pivot_before = pivot_before.reindex(row_order)
     pivot_after  = pivot_after.reindex(row_order)
     pivot_delta  = pivot_delta.reindex(row_order)
@@ -561,14 +554,14 @@ plot_cpc_heatmaps(summary)
 # ── Top 2 collections by revenue lift: lift curve per placement group ─────────
 SEGMENT_MAX_DELTA = 2.0
 top_collections = (
-    summary.groupby("collection_name")["total_lift_pct"]
+    summary.groupby("collection_id")["total_lift_pct"]
     .max()
     .nlargest(2)
     .index
     .tolist()
 )
 segment_specs = [
-    (cn, cohorts[cohorts["collection_name"] == cn])
+    (cn, cohorts[cohorts["collection_id"] == cn])
     for cn in top_collections
 ]
 
@@ -580,7 +573,7 @@ fig.suptitle(f"Revenue Lift vs Hard Reserve Increment\n(SP clicked winners, budg
 for ax, (label, seg_cohorts) in zip(axes, segment_specs):
     for _, cohort in seg_cohorts.iterrows():
         pg = cohort["placement_group"]
-        df_seg = df[(df["collection_name"] == cohort["collection_name"]) & (df["placement_group"] == pg)]
+        df_seg = df[(df["collection_id"] == cohort["collection_id"]) & (df["placement_group"] == pg)]
         results, _ = compute_revenue_lift_segment(df_seg, budget_map, max_delta=SEGMENT_MAX_DELTA)
         if results is None:
             continue
@@ -600,9 +593,9 @@ plt.show()
 
 #%%
 # ── Debug: per-placement breakdown for given collections ──────────────────────
-def debug_cohort(collection_names: list) -> None:
+def debug_cohort(collection_ids: list) -> None:
     """
-    For each collection in collection_names, print a per-placement breakdown:
+    For each collection in collection_ids, print a per-placement breakdown:
       - Collection sales ($)
       - Collection ad fee before / after hard reserve increment ($)
       - ROAS before / after
@@ -616,8 +609,8 @@ def debug_cohort(collection_names: list) -> None:
         f" {'AvgCPC Bef':>11} {'AvgCPC Aft':>11} {'Clicks':>8}"
     )
 
-    for cn in collection_names:
-        rows = summary[summary["collection_name"] == cn].sort_values("placement_group")
+    for cn in collection_ids:
+        rows = summary[summary["collection_id"] == cn].sort_values("placement_group")
         if rows.empty:
             print(f"\nNo data for: {cn}")
             continue
@@ -629,7 +622,7 @@ def debug_cohort(collection_names: list) -> None:
 
         for _, row in rows.iterrows():
             pg = row["placement_group"]
-            cohort_df = df[(df["collection_name"] == cn) & (df["placement_group"] == pg)]
+            cohort_df = df[(df["collection_id"] == cn) & (df["placement_group"] == pg)]
             cohort_cpc_by_campaign = cohort_df.groupby("campaign_id")["cpc_dollars"].sum()
             fractions = (cohort_cpc_by_campaign / _campaign_total_cpc.reindex(cohort_cpc_by_campaign.index)).fillna(1.0)
 
