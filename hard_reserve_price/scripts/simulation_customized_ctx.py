@@ -5,7 +5,6 @@ from scipy.optimize import minimize, brentq
 from scipy.stats import gamma as gamma_dist, lognorm
 
 from simulation_customized_ctx_config import (
-    PLACEMENT_GROUPS,
     PLACEMENT_TO_GROUP,
     PLACEMENT_GROUP_ORDER,
     COHORT_DIM,
@@ -53,38 +52,14 @@ WHERE acd.event_date BETWEEN '{train_start_date}' AND '{train_end_date}'
 """
 
 # ── Evaluation SQL ────────────────────────────────────────────────────────────
-# Clicked winners (rank=0) over the eval date range with all pricing and cohort fields.
-# Identical structure to segment_placement_ctx.py QUERY.
+# All candidates (rank < max_rank) for clicked auctions over the eval date
+# range.  Auction selection uses campaign-level sampling on the rank-0 winner,
+# but once an auction is selected ALL its candidates are included (regardless
+# of their campaign hash) so that runner-up promotion works correctly.
 EVAL_QUERY = """
-WITH winners AS (
+WITH clicked AS (
     SELECT
-        acd.auction_id,
-        acd.campaign_id,
-        acd.placement,
-        acd.event_date,
-        acd.auction_bid / 100.0                                                     AS auction_bid_dollars,
-        acd.bid_price_unit_amount / 100.0                                           AS cpc_dollars,
-        GET(PARSE_JSON(acd.pricing_metadata), 'cpcGsp')::INT / 100.0               AS raw_gsp_dollars,
-        GET(PARSE_JSON(acd.pricing_metadata), 'hardReserve')::INT / 100.0          AS hard_reserve_dollars,
-        GET(PARSE_JSON(acd.pricing_metadata), 'softReserveBeta')::FLOAT
-            * GET(PARSE_JSON(acd.pricing_metadata), 'nextBid')::INT / 100.0        AS soft_reserve_dollars,
-        COALESCE(acd.normalized_query, 'Unknown')                                  AS normalized_query,
-        COALESCE(acd.l1_category_id::VARCHAR, 'Unknown')                           AS l1_category_id,
-        COALESCE(acd.collection_id, 'Unknown')                                     AS collection_id,
-        acd.event_hour                                                              AS hour_bucket,
-        acd.event_timestamp                                                            AS auction_timestamp
-    FROM edw.ads.ads_auction_candidates_event_delta acd
-    WHERE acd.event_date BETWEEN '{eval_start_date}' AND '{eval_end_date}'
-      AND acd.CURRENCY_ISO_TYPE IN ('USD')
-      AND acd.placement LIKE '%SPONSORED_PRODUCTS%'
-      AND acd.auction_rank = 0
-      AND acd.pricing_metadata IS NOT NULL
-      AND MOD(ABS(HASH(acd.campaign_id)), 100) < {eval_sample_pct}
-),
-clicked AS (
-    SELECT
-        ad_auction_id,
-        MIN(event_timestamp) AS event_timestamp
+        ad_auction_id
     FROM proddb.public.fact_item_card_click_dedup
     WHERE event_date BETWEEN '{eval_start_date}' AND '{eval_end_date}'
       AND is_sponsored = 1
@@ -92,24 +67,42 @@ clicked AS (
       AND ad_auction_id IS NOT NULL
       AND campaign_id IS NOT NULL
     GROUP BY ad_auction_id
+),
+sampled_clicked_auctions AS (
+    SELECT acd.auction_id
+    FROM edw.ads.ads_auction_candidates_event_delta acd
+    INNER JOIN clicked ON acd.auction_id = clicked.ad_auction_id
+    WHERE acd.event_date BETWEEN '{eval_start_date}' AND '{eval_end_date}'
+      AND acd.CURRENCY_ISO_TYPE IN ('USD')
+      AND acd.placement LIKE '%SPONSORED_PRODUCTS%'
+      AND acd.auction_rank = 0
+      AND acd.pricing_metadata IS NOT NULL
+      AND MOD(ABS(HASH(acd.campaign_id)), 100) < {eval_sample_pct}
 )
 SELECT
-    winners.auction_id,
-    winners.campaign_id,
-    winners.placement,
-    winners.event_date,
-    winners.normalized_query,
-    winners.l1_category_id,
-    winners.collection_id,
-    winners.hour_bucket,
-    auction_bid_dollars,
-    cpc_dollars,
-    raw_gsp_dollars,
-    soft_reserve_dollars,
-    hard_reserve_dollars,
-    winners.auction_timestamp
-FROM winners
-INNER JOIN clicked ON winners.auction_id = clicked.ad_auction_id
+    acd.auction_id,
+    acd.campaign_id,
+    acd.placement,
+    acd.event_date,
+    acd.auction_rank,
+    acd.auction_bid / 100.0                                                     AS auction_bid_dollars,
+    acd.bid_price_unit_amount / 100.0                                           AS cpc_dollars,
+    GET(PARSE_JSON(acd.pricing_metadata), 'cpcGsp')::INT / 100.0               AS raw_gsp_dollars,
+    GET(PARSE_JSON(acd.pricing_metadata), 'hardReserve')::INT / 100.0          AS hard_reserve_dollars,
+    GET(PARSE_JSON(acd.pricing_metadata), 'softReserveBeta')::FLOAT
+        * GET(PARSE_JSON(acd.pricing_metadata), 'nextBid')::INT / 100.0        AS soft_reserve_dollars,
+    COALESCE(acd.normalized_query, 'Unknown')                                  AS normalized_query,
+    COALESCE(acd.l1_category_id::VARCHAR, 'Unknown')                           AS l1_category_id,
+    COALESCE(acd.collection_id, 'Unknown')                                     AS collection_id,
+    acd.event_hour                                                              AS hour_bucket,
+    acd.event_timestamp                                                         AS auction_timestamp
+FROM edw.ads.ads_auction_candidates_event_delta acd
+WHERE acd.event_date BETWEEN '{eval_start_date}' AND '{eval_end_date}'
+  AND acd.CURRENCY_ISO_TYPE IN ('USD')
+  AND acd.placement LIKE '%SPONSORED_PRODUCTS%'
+  AND acd.auction_rank < {max_rank}
+  AND acd.pricing_metadata IS NOT NULL
+  AND acd.auction_id IN (SELECT auction_id FROM sampled_clicked_auctions)
 """
 
 BUDGET_QUERY = """
@@ -161,11 +154,13 @@ def fetch_eval_data(
     eval_start_date: str = EVAL_START_DATE,
     eval_end_date: str = EVAL_END_DATE,
     eval_sample_pct: int = EVAL_SAMPLE_PCT,
+    max_rank: int = MAX_RANK,
 ) -> pd.DataFrame:
     query = EVAL_QUERY.format(
         eval_start_date=eval_start_date,
         eval_end_date=eval_end_date,
         eval_sample_pct=eval_sample_pct,
+        max_rank=max_rank,
     )
     with get_connection() as conn:
         cursor = conn.cursor()
@@ -181,6 +176,7 @@ def fetch_eval_data(
     df["event_date"] = pd.to_datetime(df["event_date"], errors="coerce").dt.date.astype(str)
     df["auction_timestamp"] = pd.to_datetime(df["auction_timestamp"], errors="coerce")
     df["hour_bucket"] = pd.to_numeric(df["hour_bucket"], errors="coerce").astype("Int64")
+    df["auction_rank"] = pd.to_numeric(df["auction_rank"], errors="coerce").astype("Int64")
     df["auction_id"] = df["auction_id"].astype(str)
     df["campaign_id"] = df["campaign_id"].astype(str)
     return df
@@ -398,24 +394,30 @@ def train_optimal_reserves(
     return optimal_hr
 
 
-# ── Evaluation: budget-aware auction replay ───────────────────────────────────
-def _apply_budget_caps(
-    df: pd.DataFrame,
-    budget_maps: dict[str, dict],
+# ── Evaluation: auction resolution and budget-aware replay ────────────────────
+def resolve_auction_outcomes(
+    eval_all: pd.DataFrame,
     optimal_hr_map: dict,
-) -> None:
+) -> pd.DataFrame:
     """
-    Compute per-row baseline and new CPC and apply global per-(date, campaign)
-    budget caps in chronological order.
+    For each clicked auction, determine baseline and new-scenario CPC
+    considering runner-up promotion when the rank-0 winner is filtered by
+    the new hard reserve.
 
-    Budget is shared across ALL cohorts and placement groups: auctions are
-    processed in timestamp order per day, so early clicks consume budget
-    before later ones regardless of cohort.
+    Parameters
+    ----------
+    eval_all : DataFrame with ALL candidates (multiple ranks per auction).
+               Must already have placement_group and cohort_key columns.
+    optimal_hr_map : dict[(placement_group, cohort_key)] -> r_star
 
-    Adds columns to *df* in place: new_hr, cpc_baseline, cpc_new,
-    capped_baseline, capped_new.
+    Returns
+    -------
+    One-row-per-auction DataFrame (the rank-0 row) with added columns:
+        cpc_baseline, cpc_new, new_campaign_id
     """
-    # Per-row new_hr: optimal if cohort has one, else keep current HR
+    df = eval_all.copy()
+
+    # Cohort-aware new HR for every candidate row
     df["new_hr"] = [
         optimal_hr_map.get((pg, ck), hr)
         for pg, ck, hr in zip(
@@ -423,27 +425,101 @@ def _apply_budget_caps(
         )
     ]
 
-    bid = df["auction_bid_dollars"].to_numpy(dtype=float)
-    gsp = df["raw_gsp_dollars"].to_numpy(dtype=float)
-    sr  = df["soft_reserve_dollars"].to_numpy(dtype=float)
-    hr  = df["hard_reserve_dollars"].to_numpy(dtype=float)
-    new_hr = df["new_hr"].to_numpy(dtype=float)
+    # ── Baseline: always rank-0 (original winner that was clicked) ────────
+    rank0 = df[df["auction_rank"] == 0].copy()
 
-    competitive_floor = np.maximum(gsp, sr)
+    bid0   = rank0["auction_bid_dollars"].to_numpy(dtype=float)
+    gsp0   = rank0["raw_gsp_dollars"].to_numpy(dtype=float)
+    sr0    = rank0["soft_reserve_dollars"].to_numpy(dtype=float)
+    hr0    = rank0["hard_reserve_dollars"].to_numpy(dtype=float)
+    comp0  = np.maximum(gsp0, sr0)
 
-    # Baseline CPC anchored to formula (avoids data edge-case drift)
-    df["cpc_baseline"] = np.where(
-        bid < hr, 0.0,
-        np.minimum(bid, np.maximum(competitive_floor, hr)),
-    )
-    df["cpc_new"] = np.where(
-        bid < new_hr, 0.0,
-        np.minimum(bid, np.maximum(competitive_floor, new_hr)),
+    rank0["cpc_baseline"] = np.where(
+        bid0 < hr0, 0.0,
+        np.minimum(bid0, np.maximum(comp0, hr0)),
     )
 
-    # Apply budget caps per day, processing auctions chronologically.
-    # Within each campaign, cumulative spend is tracked; once budget is
-    # exhausted, remaining auctions for that campaign get 0 CPC.
+    # ── New scenario: rank-0 if it survives, else first eligible runner-up ─
+    new_hr0 = rank0["new_hr"].to_numpy(dtype=float)
+    survives = bid0 >= new_hr0
+
+    rank0["cpc_new"] = np.where(
+        survives,
+        np.minimum(bid0, np.maximum(comp0, new_hr0)),
+        np.nan,                          # placeholder — needs runner-up
+    )
+    rank0["new_campaign_id"] = np.where(
+        survives, rank0["campaign_id"], None
+    )
+
+    # ── Runner-up promotion for auctions where rank-0 is filtered ─────────
+    needs_promo = rank0.loc[rank0["cpc_new"].isna(), "auction_id"]
+
+    if len(needs_promo) > 0:
+        runners = df[
+            df["auction_id"].isin(needs_promo)
+            & (df["auction_rank"] > 0)
+            & (df["auction_bid_dollars"] >= df["new_hr"])
+        ]
+
+        if not runners.empty:
+            # Best runner-up = lowest rank among eligible candidates
+            best = runners.loc[
+                runners.groupby("auction_id")["auction_rank"].idxmin()
+            ].copy()
+
+            bid_r  = best["auction_bid_dollars"].to_numpy(dtype=float)
+            gsp_r  = best["raw_gsp_dollars"].to_numpy(dtype=float)
+            sr_r   = best["soft_reserve_dollars"].to_numpy(dtype=float)
+            nhr_r  = best["new_hr"].to_numpy(dtype=float)
+            comp_r = np.maximum(gsp_r, sr_r)
+
+            best["_promo_cpc"] = np.minimum(
+                bid_r, np.maximum(comp_r, nhr_r)
+            )
+
+            promo = (
+                best[["auction_id", "_promo_cpc", "campaign_id"]]
+                .rename(columns={"campaign_id": "_promo_cid"})
+                .set_index("auction_id")
+            )
+            rank0 = rank0.merge(
+                promo, left_on="auction_id", right_index=True, how="left"
+            )
+
+            mask = rank0["cpc_new"].isna()
+            rank0.loc[mask, "cpc_new"] = rank0.loc[mask, "_promo_cpc"]
+            rank0.loc[mask, "new_campaign_id"] = rank0.loc[mask, "_promo_cid"]
+            rank0 = rank0.drop(columns=["_promo_cpc", "_promo_cid"])
+
+    # Auctions where no candidate is eligible → 0 revenue
+    rank0["cpc_new"] = rank0["cpc_new"].fillna(0.0)
+    rank0["new_campaign_id"] = rank0["new_campaign_id"].fillna(
+        rank0["campaign_id"]
+    )
+
+    n_promo = (rank0["new_campaign_id"] != rank0["campaign_id"]).sum()
+    n_filtered = (rank0["cpc_new"] == 0.0).sum() - (rank0["cpc_baseline"] == 0.0).sum()
+    print(f"  Runner-up promotions: {n_promo:,}")
+    print(f"  Net auctions lost (no eligible candidate): {max(n_filtered, 0):,}")
+
+    return rank0.drop(columns=["new_hr"])
+
+
+def _apply_budget_caps(
+    df: pd.DataFrame,
+    budget_maps: dict[str, dict],
+) -> None:
+    """
+    Apply global per-(date, campaign) budget caps in chronological order
+    to pre-computed cpc_baseline and cpc_new columns.
+
+    Baseline budgets are tracked by campaign_id (the original winner).
+    New-scenario budgets are tracked by new_campaign_id (may differ when
+    a runner-up from a different campaign is promoted).
+
+    Adds columns to *df* in place: capped_baseline, capped_new.
+    """
     df["capped_baseline"] = 0.0
     df["capped_new"] = 0.0
 
@@ -455,21 +531,22 @@ def _apply_budget_caps(
             continue
         day_budget = budget_maps[dt]
 
-        budgets = day["campaign_id"].map(
+        # ── Baseline: budget tracked by campaign_id ───────────────────────
+        budgets_bl = day["campaign_id"].map(
             lambda c, b=day_budget: b.get(c, float("inf"))
         )
-
-        # Baseline: chronological cumulative spend per campaign → cap at budget
         cum_bl = day.groupby("campaign_id")["cpc_baseline"].cumsum()
-        # remaining budget *before* this row = budget - (cumsum - this row)
-        remaining_bl = (budgets - (cum_bl - day["cpc_baseline"])).clip(lower=0)
+        remaining_bl = (budgets_bl - (cum_bl - day["cpc_baseline"])).clip(lower=0)
         df.loc[day.index, "capped_baseline"] = (
             day["cpc_baseline"].clip(upper=remaining_bl).values
         )
 
-        # New: same chronological logic with new CPC
-        cum_nw = day.groupby("campaign_id")["cpc_new"].cumsum()
-        remaining_nw = (budgets - (cum_nw - day["cpc_new"])).clip(lower=0)
+        # ── New: budget tracked by new_campaign_id ────────────────────────
+        budgets_nw = day["new_campaign_id"].map(
+            lambda c, b=day_budget: b.get(c, float("inf"))
+        )
+        cum_nw = day.groupby("new_campaign_id")["cpc_new"].cumsum()
+        remaining_nw = (budgets_nw - (cum_nw - day["cpc_new"])).clip(lower=0)
         df.loc[day.index, "capped_new"] = (
             day["cpc_new"].clip(upper=remaining_nw).values
         )
@@ -728,16 +805,18 @@ for pg in PLACEMENT_GROUP_ORDER:
             f"median=${np.median(r_stars):.3f}"
         )
 
-#%% Evaluation: fetch clicked winners from eval date range
+#%% Evaluation: fetch all candidates for clicked auctions
 print(f"\nFetching evaluation data ({EVAL_START_DATE} – {EVAL_END_DATE})...")
 
-eval_df = fetch_eval_data()
-eval_df.to_pickle(f"data/simulation_ctx_eval_{EVAL_START_DATE}_to_{EVAL_END_DATE}_smpl_{EVAL_SAMPLE_PCT}_df.pkl")
+eval_all = fetch_eval_data()
+eval_all.to_pickle(f"data/simulation_ctx_eval_{EVAL_START_DATE}_to_{EVAL_END_DATE}_smpl_{EVAL_SAMPLE_PCT}_df.pkl")
 
-# eval_df = pd.read_pickle("data/simulation_ctx_eval_df.pkl")
+# eval_all = pd.read_pickle("data/simulation_ctx_eval_df.pkl")
 
-print(f"  Eval clicked winners: {len(eval_df):,}")
-print(f"  Eval total CPC ($):   {eval_df['cpc_dollars'].sum():,.2f}")
+print(f"  Eval candidate rows: {len(eval_all):,}")
+print(f"  Unique auctions:     {eval_all['auction_id'].nunique():,}")
+rank0_only = eval_all[eval_all["auction_rank"] == 0]
+print(f"  Eval total CPC ($):  {rank0_only['cpc_dollars'].sum():,.2f}")
 
 #%% Fetch budget and ROAS data
 print(f"\nFetching campaign daily budgets ({EVAL_START_DATE} – {EVAL_END_DATE})...")
@@ -765,15 +844,14 @@ print(f"  Auctions with sales: {len(sales_df):,}")
 
 #%% Run evaluation replay
 print("\nRunning auction replay with Myerson-optimal reserves...")
-# Add cohort columns and join per-auction sales for ROAS computation downstream
-eval_df["placement_group"] = eval_df["placement"].map(PLACEMENT_TO_GROUP).fillna("Other")
-eval_df["hour_bucket"] = eval_df["hour_bucket"].astype(str)
-conditions = [eval_df["placement_group"] == pg for pg in PLACEMENT_GROUP_ORDER]
-choices    = [eval_df[COHORT_DIM[pg]] for pg in PLACEMENT_GROUP_ORDER]
-eval_df["cohort_key"] = np.select(conditions, choices, default="Other")
+# Add cohort columns to ALL candidates (needed for new_hr lookup in resolve)
+eval_all = _add_cohort_columns(eval_all)
+
+# Resolve per-auction winners with runner-up promotion, then join sales
+eval_df = resolve_auction_outcomes(eval_all, optimal_hr_map)
 eval_df = eval_df.merge(sales_df, on="auction_id", how="left")
 
-_apply_budget_caps(eval_df, budget_maps, optimal_hr_map)
+_apply_budget_caps(eval_df, budget_maps)
 
 summary = evaluate_all_cohorts(eval_df, optimal_hr_map)
 
