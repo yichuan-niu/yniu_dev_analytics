@@ -477,10 +477,8 @@ def _evaluate_cohort(
 
     ad_fee_before = ad_fee_after = 0.0
     for i, (start, end) in enumerate(zip(first_idx, last_idx)):
-        funded = np.cumsum(new_cpc[start:end]) <= budgets[i]
-        # "before" is also budget-gated on new_cpc spend order (consistent denominator)
-        ad_fee_before += cpc_baseline[start:end][funded].sum()
-        ad_fee_after  += new_cpc[start:end][funded].sum()
+        ad_fee_before += min(cpc_baseline[start:end].sum(), budgets[i])
+        ad_fee_after  += min(new_cpc[start:end].sum(), budgets[i])
 
     return float(ad_fee_before), float(ad_fee_after), len(work)
 
@@ -519,7 +517,9 @@ def evaluate_all_cohorts(
         floor = FLOOR_PRICES[pg]
 
         r_star = optimal_hr_map.get((pg, ck))
-        new_hr = r_star if (r_star is not None and r_star > floor) else floor
+        if r_star is None or r_star <= floor:
+            continue  # no improvement found; keep original hard_reserve_dollars
+        new_hr = r_star
 
         df_seg = df[(df["placement_group"] == pg) & (df["cohort_key"] == ck)]
         before, after, n = _evaluate_cohort(df_seg, budget_map, new_hr)
@@ -557,19 +557,15 @@ def evaluate_all_cohorts(
 def compute_roas(
     summary: pd.DataFrame,
     eval_df: pd.DataFrame,
+    budget_map: dict,
 ) -> pd.DataFrame:
     """
-    Attach ROAS before/after columns to summary using per-auction attributed sales.
+    Attach ROAS before/after columns to summary using per-auction attributed sales,
+    with per-campaign daily budget constraints matching the ad-fee replay logic.
 
-    eval_df must have an 'attributed_sales_usd' column (NaN for auctions with no sales)
-    joined from FACT_ITEM_ORDER_ATTRIBUTION via auction_id.
-
-    Before: sum(attributed_sales_usd) / sum(cpc_dollars)   [all auctions in cohort]
-    After:  sum(attributed_sales for bid >= new_hr) / sum(new_cpc for bid >= new_hr)
-            where new_cpc = min(bid, max(gsp, sr, new_hr))
-
-    Raising the hard reserve causes some auctions to lose (bid < new_hr); their
-    attributed sales are lost, and their CPC drops to zero.
+    For each campaign within a cohort, clicks are processed chronologically.
+    Spend is capped at the daily budget; attributed sales are scaled proportionally
+    when the last funded click is partially filled.
     """
     roas_rows = []
     for _, row in summary.iterrows():
@@ -583,33 +579,67 @@ def compute_roas(
         if cohort_df.empty:
             continue
 
-        bid   = cohort_df["auction_bid_dollars"].to_numpy(dtype=float)
-        gsp   = cohort_df["raw_gsp_dollars"].to_numpy(dtype=float)
-        sr    = cohort_df["soft_reserve_dollars"].to_numpy(dtype=float)
-        cpc   = cohort_df["cpc_dollars"].to_numpy(dtype=float)
-        sales = cohort_df["attributed_sales_usd"].fillna(0.0).to_numpy(dtype=float)
+        work = (
+            cohort_df
+            .sort_values(["campaign_id", "event_timestamp"], na_position="last")
+            .reset_index(drop=True)
+        )
 
-        # Before: all clicked winners, actual CPC and sales
-        ad_fee_before = cpc.sum()
-        if ad_fee_before == 0:
+        bid   = work["auction_bid_dollars"].to_numpy(dtype=float)
+        gsp   = work["raw_gsp_dollars"].to_numpy(dtype=float)
+        sr    = work["soft_reserve_dollars"].to_numpy(dtype=float)
+        hr    = work["hard_reserve_dollars"].to_numpy(dtype=float)
+        cpc   = work["cpc_dollars"].to_numpy(dtype=float)
+        sales = work["attributed_sales_usd"].fillna(0.0).to_numpy(dtype=float)
+        cmp_ids = work["campaign_id"].to_numpy()
+
+        competitive_floor = np.maximum(gsp, sr)
+
+        # Baseline CPC (original HR per row)
+        cpc_baseline = np.where(
+            bid < hr, 0.0,
+            np.minimum(bid, np.maximum(competitive_floor, hr)),
+        )
+        # New CPC (Myerson optimal HR)
+        new_cpc = np.where(
+            bid < new_hr, 0.0,
+            np.minimum(bid, np.maximum(competitive_floor, new_hr)),
+        )
+
+        _, first_idx = np.unique(cmp_ids, return_index=True)
+        last_idx = np.append(first_idx[1:], len(cmp_ids))
+        budgets = np.array(
+            [budget_map.get(c, float("inf")) for c in cmp_ids[first_idx]], dtype=float
+        )
+
+        total_spend_before = total_sales_before = 0.0
+        total_spend_after  = total_sales_after  = 0.0
+
+        for i, (start, end) in enumerate(zip(first_idx, last_idx)):
+            s_before = cpc_baseline[start:end]
+            s_after  = new_cpc[start:end]
+            s_sales  = sales[start:end]
+            bgt      = budgets[i]
+
+            # Before: budget-capped spend and proportionally scaled sales
+            raw_spend_before = s_before.sum()
+            if raw_spend_before > 0:
+                ratio_before = min(raw_spend_before, bgt) / raw_spend_before
+                total_spend_before += raw_spend_before * ratio_before
+                total_sales_before += s_sales[s_before > 0].sum() * ratio_before
+
+            # After: budget-capped spend and proportionally scaled sales
+            raw_spend_after = s_after.sum()
+            if raw_spend_after > 0:
+                ratio_after = min(raw_spend_after, bgt) / raw_spend_after
+                total_spend_after += raw_spend_after * ratio_after
+                total_sales_after += s_sales[s_after > 0].sum() * ratio_after
+
+        if total_spend_before == 0:
             continue
-        roas_before = sales.sum() / ad_fee_before
 
-        # Short-circuit: if HR unchanged (new_hr == floor), skip re-computation
-        floor = FLOOR_PRICES[pg]
-        if new_hr <= floor:
-            roas_after = roas_before
-        else:
-            # After: only auctions where bid >= new_hr remain winners
-            wins_after = bid >= new_hr
-            new_cpc    = np.where(
-                wins_after,
-                np.minimum(bid, np.maximum(np.maximum(gsp, sr), new_hr)),
-                0.0,
-            )
-            ad_fee_after  = new_cpc.sum()
-            sales_after   = sales[wins_after].sum()
-            roas_after    = sales_after / ad_fee_after if ad_fee_after > 0 else 0.0
+        roas_before = total_sales_before / total_spend_before
+        roas_after  = total_sales_after / total_spend_after if total_spend_after > 0 else 0.0
 
         roas_rows.append({
             "placement_group": pg,
@@ -812,7 +842,7 @@ eval_df = eval_df.merge(sales_df, on="auction_id", how="left")
 summary = evaluate_all_cohorts(eval_df, budget_map, optimal_hr_map)
 
 #%% Compute ROAS before/after
-summary = compute_roas(summary, eval_df)
+summary = compute_roas(summary, eval_df, budget_map)
 
 #%% Print summary table
 print("\nRevenue Lift by (Placement Group, Cohort) — top per group:")
@@ -851,8 +881,8 @@ hr_lookup = (
 )
 
 new_hr_vec = pd.Series(
-    [hr_lookup.get((pg, ck), FLOOR_PRICES.get(pg, 0.0))
-     for pg, ck in zip(eval_df["placement_group"], eval_df["cohort_key"])],
+    [hr_lookup.get((pg, ck), row_hr)
+     for pg, ck, row_hr in zip(eval_df["placement_group"], eval_df["cohort_key"], eval_df["hard_reserve_dollars"])],
     index=eval_df.index,
 )
 
