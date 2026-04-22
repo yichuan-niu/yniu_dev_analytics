@@ -106,6 +106,7 @@ WITH winners AS (
         acd.auction_id,
         acd.campaign_id,
         acd.placement,
+        acd.event_date,
         acd.auction_bid / 100.0                                                     AS auction_bid_dollars,
         acd.bid_price_unit_amount / 100.0                                           AS cpc_dollars,
         GET(PARSE_JSON(acd.pricing_metadata), 'cpcGsp')::INT / 100.0               AS raw_gsp_dollars,
@@ -140,6 +141,7 @@ SELECT
     winners.auction_id,
     winners.campaign_id,
     winners.placement,
+    winners.event_date,
     winners.normalized_query,
     winners.l1_category_id,
     winners.collection_id,
@@ -156,11 +158,12 @@ INNER JOIN clicked ON winners.auction_id = clicked.ad_auction_id
 
 BUDGET_QUERY = """
 SELECT
+    date_est,
     campaign_id,
     COALESCE(MAX(campaign_budget), SUM(daily_budget)) / 100 AS campaign_daily_budget_dollars
 FROM PRODDB.PUBLIC.FACT_ADS_DAILY_BUDGET
-WHERE date_est = '{budget_date}'
-GROUP BY campaign_id
+WHERE date_est BETWEEN '{start_date}' AND '{end_date}'
+GROUP BY date_est, campaign_id
 """
 
 SALES_QUERY = """
@@ -217,6 +220,7 @@ def fetch_eval_data(
     for col in ["auction_bid_dollars", "cpc_dollars", "raw_gsp_dollars",
                 "soft_reserve_dollars", "hard_reserve_dollars"]:
         df[col] = pd.to_numeric(df[col], errors="coerce")
+    df["event_date"] = pd.to_datetime(df["event_date"], errors="coerce").dt.date.astype(str)
     df["event_timestamp"] = pd.to_datetime(df["event_timestamp"], errors="coerce")
     df["hour_bucket"] = pd.to_numeric(df["hour_bucket"], errors="coerce").astype("Int64")
     df["auction_id"] = df["auction_id"].astype(str)
@@ -224,14 +228,19 @@ def fetch_eval_data(
     return df
 
 
-def fetch_budget(budget_date: str = EVAL_END_DATE) -> pd.DataFrame:
-    query = BUDGET_QUERY.format(budget_date=budget_date)
+def fetch_budget(
+    start_date: str = EVAL_START_DATE,
+    end_date: str = EVAL_END_DATE,
+) -> pd.DataFrame:
+    """Fetch per-day campaign budgets for the eval date range."""
+    query = BUDGET_QUERY.format(start_date=start_date, end_date=end_date)
     with get_connection() as conn:
         cursor = conn.cursor()
         cursor.execute(query)
         columns = [col[0].lower() for col in cursor.description]
         rows = cursor.fetchall()
     df = pd.DataFrame(rows, columns=columns)
+    df["date_est"] = pd.to_datetime(df["date_est"], errors="coerce").dt.date.astype(str)
     df["campaign_id"] = df["campaign_id"].astype(str)
     df["campaign_daily_budget_dollars"] = pd.to_numeric(
         df["campaign_daily_budget_dollars"], errors="coerce"
@@ -484,22 +493,18 @@ def _evaluate_cohort(
 
 def evaluate_all_cohorts(
     eval_df: pd.DataFrame,
-    budget_map: dict,
+    budget_maps: dict[str, dict],
     optimal_hr_map: dict,
 ) -> pd.DataFrame:
     """
-    Replay evaluation data using the Myerson-optimal reserve per cohort.
+    Replay evaluation data using the Myerson-optimal reserve per cohort,
+    with per-day budget constraints.
 
-    eval_df must already have 'placement_group' and 'cohort_key' columns
-    (set by the caller via _add_cohort_columns or equivalent).
-
-    For each (placement_group, cohort_key) that appears in eval_df:
-      - Look up r_star from optimal_hr_map.
-      - Only apply r_star if r_star > FLOOR_PRICES[pg]; otherwise no change.
-
-    Returns a summary DataFrame per cohort with before/after metrics.
+    budget_maps: {date_str: {campaign_id: daily_budget}}.
+    Replay is run per-day so each campaign's spend resets at the daily boundary.
     """
     df = eval_df[eval_df["placement_group"].isin(PLACEMENT_GROUP_ORDER)].copy()
+    eval_dates = sorted(budget_maps.keys())
 
     cohorts = (
         df.groupby(["placement_group", "cohort_key"])
@@ -517,31 +522,40 @@ def evaluate_all_cohorts(
 
         r_star = optimal_hr_map.get((pg, ck))
         if r_star is None or r_star <= floor:
-            continue  # no improvement found; keep original hard_reserve_dollars
+            continue
         new_hr = r_star
 
         df_seg = df[(df["placement_group"] == pg) & (df["cohort_key"] == ck)]
-        before, after, n = _evaluate_cohort(df_seg, budget_map, new_hr)
 
-        if before == 0:
+        total_before = total_after = total_n = 0
+        for dt in eval_dates:
+            day_seg = df_seg[df_seg["event_date"] == dt]
+            if day_seg.empty:
+                continue
+            before, after, n = _evaluate_cohort(day_seg, budget_maps[dt], new_hr)
+            total_before += before
+            total_after += after
+            total_n += n
+
+        if total_before == 0:
             continue
 
         rows.append({
             "placement_group":  pg,
             "cohort_key":       ck,
-            "n_rows":           n,
+            "n_rows":           total_n,
             "floor_price":      floor,
             "r_star":           r_star,
             "new_hr_applied":   new_hr,
-            "ad_fee_before":    before,
-            "ad_fee_after":     after,
-            "revenue_lift_pct": (after - before) / before * 100,
-            "avg_cpc_before":   before / n,
-            "avg_cpc_after":    after / n,
+            "ad_fee_before":    total_before,
+            "ad_fee_after":     total_after,
+            "revenue_lift_pct": (total_after - total_before) / total_before * 100,
+            "avg_cpc_before":   total_before / total_n,
+            "avg_cpc_after":    total_after / total_n,
         })
         print(
             f"  [{pg} / {ck}]  new_hr=${new_hr:.4f}  "
-            f"before=${before:.2f}  after=${after:.2f}  "
+            f"before=${total_before:.2f}  after=${total_after:.2f}  "
             f"lift={rows[-1]['revenue_lift_pct']:+.4f}%"
         )
 
@@ -553,19 +567,73 @@ def evaluate_all_cohorts(
 
 
 # ── ROAS computation ──────────────────────────────────────────────────────────
+def _roas_one_day(
+    day_df: pd.DataFrame,
+    day_budget: dict,
+    new_hr: float,
+) -> tuple[float, float, float, float]:
+    """Budget-capped spend and sales for a single day. Returns (spend_before, sales_before, spend_after, sales_after)."""
+    work = (
+        day_df
+        .sort_values(["campaign_id", "event_timestamp"], na_position="last")
+        .reset_index(drop=True)
+    )
+    bid   = work["auction_bid_dollars"].to_numpy(dtype=float)
+    gsp   = work["raw_gsp_dollars"].to_numpy(dtype=float)
+    sr    = work["soft_reserve_dollars"].to_numpy(dtype=float)
+    hr    = work["hard_reserve_dollars"].to_numpy(dtype=float)
+    sales = work["attributed_sales_usd"].fillna(0.0).to_numpy(dtype=float)
+    cmp_ids = work["campaign_id"].to_numpy()
+
+    competitive_floor = np.maximum(gsp, sr)
+    cpc_baseline = np.where(
+        bid < hr, 0.0,
+        np.minimum(bid, np.maximum(competitive_floor, hr)),
+    )
+    new_cpc = np.where(
+        bid < new_hr, 0.0,
+        np.minimum(bid, np.maximum(competitive_floor, new_hr)),
+    )
+
+    _, first_idx = np.unique(cmp_ids, return_index=True)
+    last_idx = np.append(first_idx[1:], len(cmp_ids))
+    budgets = np.array(
+        [day_budget.get(c, float("inf")) for c in cmp_ids[first_idx]], dtype=float
+    )
+
+    spend_before = sales_before = 0.0
+    spend_after  = sales_after  = 0.0
+    for i, (start, end) in enumerate(zip(first_idx, last_idx)):
+        s_before = cpc_baseline[start:end]
+        s_after  = new_cpc[start:end]
+        s_sales  = sales[start:end]
+        bgt      = budgets[i]
+
+        raw_before = s_before.sum()
+        if raw_before > 0:
+            ratio = min(raw_before, bgt) / raw_before
+            spend_before += raw_before * ratio
+            sales_before += s_sales[s_before > 0].sum() * ratio
+
+        raw_after = s_after.sum()
+        if raw_after > 0:
+            ratio = min(raw_after, bgt) / raw_after
+            spend_after += raw_after * ratio
+            sales_after += s_sales[s_after > 0].sum() * ratio
+
+    return spend_before, sales_before, spend_after, sales_after
+
+
 def compute_roas(
     summary: pd.DataFrame,
     eval_df: pd.DataFrame,
-    budget_map: dict,
+    budget_maps: dict[str, dict],
 ) -> pd.DataFrame:
     """
     Attach ROAS before/after columns to summary using per-auction attributed sales,
-    with per-campaign daily budget constraints matching the ad-fee replay logic.
-
-    For each campaign within a cohort, clicks are processed chronologically.
-    Spend is capped at the daily budget; attributed sales are scaled proportionally
-    when the last funded click is partially filled.
+    with per-day per-campaign budget constraints matching the ad-fee replay logic.
     """
+    eval_dates = sorted(budget_maps.keys())
     roas_rows = []
     for _, row in summary.iterrows():
         pg     = row["placement_group"]
@@ -578,61 +646,17 @@ def compute_roas(
         if cohort_df.empty:
             continue
 
-        work = (
-            cohort_df
-            .sort_values(["campaign_id", "event_timestamp"], na_position="last")
-            .reset_index(drop=True)
-        )
-
-        bid   = work["auction_bid_dollars"].to_numpy(dtype=float)
-        gsp   = work["raw_gsp_dollars"].to_numpy(dtype=float)
-        sr    = work["soft_reserve_dollars"].to_numpy(dtype=float)
-        hr    = work["hard_reserve_dollars"].to_numpy(dtype=float)
-        cpc   = work["cpc_dollars"].to_numpy(dtype=float)
-        sales = work["attributed_sales_usd"].fillna(0.0).to_numpy(dtype=float)
-        cmp_ids = work["campaign_id"].to_numpy()
-
-        competitive_floor = np.maximum(gsp, sr)
-
-        # Baseline CPC (original HR per row)
-        cpc_baseline = np.where(
-            bid < hr, 0.0,
-            np.minimum(bid, np.maximum(competitive_floor, hr)),
-        )
-        # New CPC (Myerson optimal HR)
-        new_cpc = np.where(
-            bid < new_hr, 0.0,
-            np.minimum(bid, np.maximum(competitive_floor, new_hr)),
-        )
-
-        _, first_idx = np.unique(cmp_ids, return_index=True)
-        last_idx = np.append(first_idx[1:], len(cmp_ids))
-        budgets = np.array(
-            [budget_map.get(c, float("inf")) for c in cmp_ids[first_idx]], dtype=float
-        )
-
         total_spend_before = total_sales_before = 0.0
         total_spend_after  = total_sales_after  = 0.0
-
-        for i, (start, end) in enumerate(zip(first_idx, last_idx)):
-            s_before = cpc_baseline[start:end]
-            s_after  = new_cpc[start:end]
-            s_sales  = sales[start:end]
-            bgt      = budgets[i]
-
-            # Before: budget-capped spend and proportionally scaled sales
-            raw_spend_before = s_before.sum()
-            if raw_spend_before > 0:
-                ratio_before = min(raw_spend_before, bgt) / raw_spend_before
-                total_spend_before += raw_spend_before * ratio_before
-                total_sales_before += s_sales[s_before > 0].sum() * ratio_before
-
-            # After: budget-capped spend and proportionally scaled sales
-            raw_spend_after = s_after.sum()
-            if raw_spend_after > 0:
-                ratio_after = min(raw_spend_after, bgt) / raw_spend_after
-                total_spend_after += raw_spend_after * ratio_after
-                total_sales_after += s_sales[s_after > 0].sum() * ratio_after
+        for dt in eval_dates:
+            day_df = cohort_df[cohort_df["event_date"] == dt]
+            if day_df.empty:
+                continue
+            sb, slb, sa, sla = _roas_one_day(day_df, budget_maps[dt], new_hr)
+            total_spend_before += sb
+            total_sales_before += slb
+            total_spend_after  += sa
+            total_sales_after  += sla
 
         if total_spend_before == 0:
             continue
@@ -809,15 +833,19 @@ print(f"  Eval clicked winners: {len(eval_df):,}")
 print(f"  Eval total CPC ($):   {eval_df['cpc_dollars'].sum():,.2f}")
 
 #%% Fetch budget and ROAS data
-print(f"\nFetching campaign daily budgets for {EVAL_END_DATE}...")
+print(f"\nFetching campaign daily budgets ({EVAL_START_DATE} – {EVAL_END_DATE})...")
 
 budget_df = fetch_budget()
-budget_df.to_pickle("data/simulation_ctx_budget_df.pkl")
+budget_df.to_pickle(f"data/simulation_ctx_budget_{EVAL_START_DATE}_to_{EVAL_END_DATE}_df.pkl")
 
-# budget_df = pd.read_pickle("data/simulation_ctx_budget_df.pkl")
+# budget_df = pd.read_pickle(f"data/simulation_ctx_budget_{EVAL_START_DATE}_to_{EVAL_END_DATE}_df.pkl")
 
-budget_map = budget_df.set_index("campaign_id")["campaign_daily_budget_dollars"].to_dict()
-print(f"  Campaigns with budget: {len(budget_map):,}")
+budget_maps = {
+    dt: grp.set_index("campaign_id")["campaign_daily_budget_dollars"].to_dict()
+    for dt, grp in budget_df.groupby("date_est")
+}
+print(f"  Budget dates: {sorted(budget_maps.keys())}")
+print(f"  Campaigns with budget (total): {budget_df['campaign_id'].nunique():,}")
 
 print(f"\nFetching per-auction attributed sales ({EVAL_START_DATE} – {EVAL_END_DATE})...")
 
@@ -838,10 +866,10 @@ choices    = [eval_df[COHORT_DIM[pg]] for pg in PLACEMENT_GROUP_ORDER]
 eval_df["cohort_key"] = np.select(conditions, choices, default="Other")
 eval_df = eval_df.merge(sales_df, on="auction_id", how="left")
 
-summary = evaluate_all_cohorts(eval_df, budget_map, optimal_hr_map)
+summary = evaluate_all_cohorts(eval_df, budget_maps, optimal_hr_map)
 
 #%% Compute ROAS before/after
-summary = compute_roas(summary, eval_df, budget_map)
+summary = compute_roas(summary, eval_df, budget_maps)
 
 #%% Print summary table
 print("\nRevenue Lift by (Placement Group, Cohort) — top per group:")
