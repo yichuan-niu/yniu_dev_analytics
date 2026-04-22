@@ -595,16 +595,21 @@ def compute_roas(
             continue
         roas_before = sales.sum() / ad_fee_before
 
-        # After: only auctions where bid >= new_hr remain winners
-        wins_after = bid >= new_hr
-        new_cpc    = np.where(
-            wins_after,
-            np.minimum(bid, np.maximum(np.maximum(gsp, sr), new_hr)),
-            0.0,
-        )
-        ad_fee_after  = new_cpc.sum()
-        sales_after   = sales[wins_after].sum()
-        roas_after    = sales_after / ad_fee_after if ad_fee_after > 0 else 0.0
+        # Short-circuit: if HR unchanged (new_hr == floor), skip re-computation
+        floor = FLOOR_PRICES[pg]
+        if new_hr <= floor:
+            roas_after = roas_before
+        else:
+            # After: only auctions where bid >= new_hr remain winners
+            wins_after = bid >= new_hr
+            new_cpc    = np.where(
+                wins_after,
+                np.minimum(bid, np.maximum(np.maximum(gsp, sr), new_hr)),
+                0.0,
+            )
+            ad_fee_after  = new_cpc.sum()
+            sales_after   = sales[wins_after].sum()
+            roas_after    = sales_after / ad_fee_after if ad_fee_after > 0 else 0.0
 
         roas_rows.append({
             "placement_group": pg,
