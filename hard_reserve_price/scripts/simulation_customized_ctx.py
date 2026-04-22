@@ -1,5 +1,4 @@
 import os
-from datetime import date
 
 import numpy as np
 import pandas as pd
@@ -146,11 +145,13 @@ clicked AS (
     GROUP BY ad_auction_id
 )
 SELECT
+    winners.auction_id,
     winners.campaign_id,
     winners.placement,
     winners.normalized_query,
     winners.l1_category_id,
     winners.collection_id,
+    winners.hour_bucket,
     auction_bid_dollars,
     cpc_dollars,
     raw_gsp_dollars,
@@ -170,18 +171,13 @@ WHERE date_est = '{budget_date}'
 GROUP BY campaign_id
 """
 
-ROAS_QUERY = """
+SALES_QUERY = """
 SELECT
-    CAMPAIGN_ID,
-    SUM(TOTAL_CX_SALES_AMOUNT_LOCAL) / 100.0  AS total_attributed_sales_usd,
-    SUM(TOTAL_CX_AD_FEE_LOCAL) / 100.0        AS total_ad_fee_usd
-FROM EDW.ADS.FACT_CPG_CPC_CAMPAIGN_PERFORMANCE
-WHERE SNAPSHOT_DATE BETWEEN '{start_date}' AND '{end_date}'
-  AND TIMEZONE_TYPE = 'utc'
-  AND DAYPART_NAME = 'day'
-  AND REPORT_TYPE   = '[brand_cohorts] campaign'
-GROUP BY CAMPAIGN_ID
-HAVING SUM(TOTAL_CX_AD_FEE_LOCAL) > 0
+    AD_AUCTION_ID                                       AS auction_id,
+    SUM(PRICE_UNIT_AMOUNT * QUANTITY_RECEIVED) / 100.0 AS attributed_sales_usd
+FROM proddb.public.FACT_ITEM_ORDER_ATTRIBUTION
+WHERE event_date BETWEEN '{eval_start_date}' AND '{eval_end_date}'
+GROUP BY AD_AUCTION_ID
 """
 
 
@@ -232,6 +228,7 @@ def fetch_eval_data(
         df[col] = pd.to_numeric(df[col], errors="coerce")
     df["event_timestamp"] = pd.to_datetime(df["event_timestamp"], errors="coerce")
     df["hour_bucket"] = pd.to_numeric(df["hour_bucket"], errors="coerce").astype("Int64")
+    df["auction_id"] = df["auction_id"].astype(str)
     df["campaign_id"] = df["campaign_id"].astype(str)
     return df
 
@@ -251,21 +248,24 @@ def fetch_budget(budget_date: str = EVAL_END_DATE) -> pd.DataFrame:
     return df.dropna(subset=["campaign_daily_budget_dollars"])
 
 
-def fetch_roas(
-    start_date: str = EVAL_START_DATE,
-    end_date: str = EVAL_END_DATE,
+def fetch_sales(
+    eval_start_date: str = EVAL_START_DATE,
+    eval_end_date: str = EVAL_END_DATE,
 ) -> pd.DataFrame:
-    query = ROAS_QUERY.format(start_date=start_date, end_date=end_date)
+    """Fetch per-auction attributed sales from FACT_ITEM_ORDER_ATTRIBUTION."""
+    query = SALES_QUERY.format(
+        eval_start_date=eval_start_date,
+        eval_end_date=eval_end_date,
+    )
     with get_connection() as conn:
         cursor = conn.cursor()
         cursor.execute(query)
         columns = [col[0].lower() for col in cursor.description]
         rows = cursor.fetchall()
     df = pd.DataFrame(rows, columns=columns)
-    df["campaign_id"] = df["campaign_id"].astype(str)
-    for col in ["total_attributed_sales_usd", "total_ad_fee_usd"]:
-        df[col] = pd.to_numeric(df[col], errors="coerce")
-    return df.dropna(subset=["total_ad_fee_usd"])
+    df["auction_id"] = df["auction_id"].astype(str)
+    df["attributed_sales_usd"] = pd.to_numeric(df["attributed_sales_usd"], errors="coerce")
+    return df.dropna(subset=["attributed_sales_usd"])
 
 
 # ── Distribution fitting (truncated MLE) ─────────────────────────────────────
@@ -493,14 +493,16 @@ def evaluate_all_cohorts(
     """
     Replay evaluation data using the Myerson-optimal reserve per cohort.
 
+    eval_df must already have 'placement_group' and 'cohort_key' columns
+    (set by the caller via _add_cohort_columns or equivalent).
+
     For each (placement_group, cohort_key) that appears in eval_df:
       - Look up r_star from optimal_hr_map.
       - Only apply r_star if r_star > FLOOR_PRICES[pg]; otherwise no change.
 
     Returns a summary DataFrame per cohort with before/after metrics.
     """
-    df = _add_cohort_columns(eval_df)
-    df = df[df["placement_group"].isin(PLACEMENT_GROUP_ORDER)].copy()
+    df = eval_df[eval_df["placement_group"].isin(PLACEMENT_GROUP_ORDER)].copy()
 
     cohorts = (
         df.groupby(["placement_group", "cohort_key"])
@@ -555,40 +557,54 @@ def evaluate_all_cohorts(
 def compute_roas(
     summary: pd.DataFrame,
     eval_df: pd.DataFrame,
-    roas_df: pd.DataFrame,
-    roas_start: str = EVAL_START_DATE,
-    roas_end: str = EVAL_END_DATE,
 ) -> pd.DataFrame:
     """
-    Attach ROAS before/after columns to summary (mirrors segment_placement_ctx.py).
-    Attribution is proportional by each campaign's CPC share in the cohort.
-    Both sales and ad_fee are normalised to a per-day basis.
-    """
-    n_days = (date.fromisoformat(roas_end) - date.fromisoformat(roas_start)).days + 1
-    roas_lookup = roas_df.set_index("campaign_id")
-    campaign_total_cpc = eval_df.groupby("campaign_id")["cpc_dollars"].sum()
+    Attach ROAS before/after columns to summary using per-auction attributed sales.
 
+    eval_df must have an 'attributed_sales_usd' column (NaN for auctions with no sales)
+    joined from FACT_ITEM_ORDER_ATTRIBUTION via auction_id.
+
+    Before: sum(attributed_sales_usd) / sum(cpc_dollars)   [all auctions in cohort]
+    After:  sum(attributed_sales for bid >= new_hr) / sum(new_cpc for bid >= new_hr)
+            where new_cpc = min(bid, max(gsp, sr, new_hr))
+
+    Raising the hard reserve causes some auctions to lose (bid < new_hr); their
+    attributed sales are lost, and their CPC drops to zero.
+    """
     roas_rows = []
     for _, row in summary.iterrows():
-        pg = row["placement_group"]
-        ck = row["cohort_key"]
+        pg     = row["placement_group"]
+        ck     = row["cohort_key"]
+        new_hr = float(row["new_hr_applied"])
 
-        cohort_df = eval_df[(eval_df["placement_group"] == pg) & (eval_df["cohort_key"] == ck)]
-        cohort_cpc = cohort_df.groupby("campaign_id")["cpc_dollars"].sum()
-        fractions = (cohort_cpc / campaign_total_cpc.reindex(cohort_cpc.index)).fillna(1.0)
-
-        cr = roas_lookup.reindex(fractions.index).dropna(subset=["total_ad_fee_usd"])
-        cr = cr.join(fractions.rename("fraction"), how="left").fillna({"fraction": 1.0})
-
-        if cr.empty or (cr["total_ad_fee_usd"] * cr["fraction"]).sum() == 0:
+        cohort_df = eval_df[
+            (eval_df["placement_group"] == pg) & (eval_df["cohort_key"] == ck)
+        ]
+        if cohort_df.empty:
             continue
 
-        sales    = (cr["total_attributed_sales_usd"] * cr["fraction"]).sum() / n_days
-        ad_fee   = (cr["total_ad_fee_usd"]           * cr["fraction"]).sum() / n_days
-        lift     = row["ad_fee_after"] - row["ad_fee_before"]
+        bid   = cohort_df["auction_bid_dollars"].to_numpy(dtype=float)
+        gsp   = cohort_df["raw_gsp_dollars"].to_numpy(dtype=float)
+        sr    = cohort_df["soft_reserve_dollars"].to_numpy(dtype=float)
+        cpc   = cohort_df["cpc_dollars"].to_numpy(dtype=float)
+        sales = cohort_df["attributed_sales_usd"].fillna(0.0).to_numpy(dtype=float)
 
-        roas_before = sales / ad_fee
-        roas_after  = sales / (ad_fee + lift) if (ad_fee + lift) > 0 else 0.0
+        # Before: all clicked winners, actual CPC and sales
+        ad_fee_before = cpc.sum()
+        if ad_fee_before == 0:
+            continue
+        roas_before = sales.sum() / ad_fee_before
+
+        # After: only auctions where bid >= new_hr remain winners
+        wins_after = bid >= new_hr
+        new_cpc    = np.where(
+            wins_after,
+            np.minimum(bid, np.maximum(np.maximum(gsp, sr), new_hr)),
+            0.0,
+        )
+        ad_fee_after  = new_cpc.sum()
+        sales_after   = sales[wins_after].sum()
+        roas_after    = sales_after / ad_fee_after if ad_fee_after > 0 else 0.0
 
         roas_rows.append({
             "placement_group": pg,
@@ -769,28 +785,29 @@ budget_df.to_pickle("data/simulation_ctx_budget_df.pkl")
 budget_map = budget_df.set_index("campaign_id")["campaign_daily_budget_dollars"].to_dict()
 print(f"  Campaigns with budget: {len(budget_map):,}")
 
-print(f"\nFetching ROAS data ({EVAL_START_DATE} – {EVAL_END_DATE})...")
+print(f"\nFetching per-auction attributed sales ({EVAL_START_DATE} – {EVAL_END_DATE})...")
 
-roas_df = fetch_roas()
-roas_df.to_pickle("data/simulation_ctx_roas_df.pkl")
+sales_df = fetch_sales()
+sales_df.to_pickle(f"data/simulation_ctx_sales_{EVAL_START_DATE}_to_{EVAL_END_DATE}_df.pkl")
 
-# roas_df = pd.read_pickle("data/simulation_ctx_roas_df.pkl")
+# sales_df = pd.read_pickle(f"data/simulation_ctx_sales_{EVAL_START_DATE}_to_{EVAL_END_DATE}_df.pkl")
 
-print(f"  Campaigns with ROAS:   {len(roas_df):,}")
+print(f"  Auctions with sales: {len(sales_df):,}")
 
 #%% Run evaluation replay
 print("\nRunning auction replay with Myerson-optimal reserves...")
-# Add cohort columns to eval_df for ROAS computation downstream
+# Add cohort columns and join per-auction sales for ROAS computation downstream
 eval_df["placement_group"] = eval_df["placement"].map(PLACEMENT_TO_GROUP).fillna("Other")
 eval_df["hour_bucket"] = eval_df["hour_bucket"].astype(str)
 conditions = [eval_df["placement_group"] == pg for pg in PLACEMENT_GROUP_ORDER]
 choices    = [eval_df[COHORT_DIM[pg]] for pg in PLACEMENT_GROUP_ORDER]
 eval_df["cohort_key"] = np.select(conditions, choices, default="Other")
+eval_df = eval_df.merge(sales_df, on="auction_id", how="left")
 
 summary = evaluate_all_cohorts(eval_df, budget_map, optimal_hr_map)
 
 #%% Compute ROAS before/after
-summary = compute_roas(summary, eval_df, roas_df)
+summary = compute_roas(summary, eval_df)
 
 #%% Print summary table
 print("\nRevenue Lift by (Placement Group, Cohort) — top per group:")
@@ -828,19 +845,10 @@ hr_lookup = (
     summary.set_index(["placement_group", "cohort_key"])["new_hr_applied"].to_dict()
 )
 
-# Tag eval_df with placement_group (already has cohort_key from the eval cell)
-def _pg(placement):
-    for pg, patterns in PLACEMENT_GROUPS.items():
-        if any(p in placement for p in patterns):
-            return pg
-    return None
-
-if "placement_group" not in eval_df.columns:
-    eval_df["placement_group"] = eval_df["placement"].apply(_pg)
-
-new_hr_vec = eval_df.apply(
-    lambda r: hr_lookup.get((r["placement_group"], r["cohort_key"]), FLOOR_PRICES.get(r["placement_group"], 0.0)),
-    axis=1,
+new_hr_vec = pd.Series(
+    [hr_lookup.get((pg, ck), FLOOR_PRICES.get(pg, 0.0))
+     for pg, ck in zip(eval_df["placement_group"], eval_df["cohort_key"])],
+    index=eval_df.index,
 )
 
 bid = eval_df["auction_bid_dollars"]
