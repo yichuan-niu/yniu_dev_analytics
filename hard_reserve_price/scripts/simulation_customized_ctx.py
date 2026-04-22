@@ -11,13 +11,14 @@ from scipy.stats import gamma as gamma_dist, lognorm
 plt.close("all")
 
 # ── Constants ─────────────────────────────────────────────────────────────────
-TRAIN_START_DATE    = "2026-03-19"   # training window start (inclusive)
-TRAIN_END_DATE      = "2026-03-25"   # training window end (inclusive)
+TRAIN_START_DATE    = "2026-03-25"   # training window start (inclusive)
+TRAIN_END_DATE      = "2026-03-31"   # training window end (inclusive)
 EVAL_START_DATE     = "2026-04-01"   # evaluation window start (inclusive)
-EVAL_END_DATE       = "2026-04-07"   # evaluation window end (inclusive)
-SAMPLE_PCT          = 100            # campaign-level sampling (MOD HASH < SAMPLE_PCT)
+EVAL_END_DATE       = "2026-04-03"   # evaluation window end (inclusive)
+TRAIN_SAMPLE_PCT    = 5              # auction-level sampling for training (MOD HASH < TRAIN_SAMPLE_PCT)
+EVAL_SAMPLE_PCT     = 50             # campaign-level sampling for eval (MOD HASH < SAMPLE_PCT)
 MAX_RANK            = 5              # use auction_rank < MAX_RANK for training bids
-MIN_COHORT_BIDS     = 1000           # min bid rows per cohort to fit a distribution
+MIN_COHORT_BIDS     = 100            # min bid rows per cohort to fit a distribution
 DIST_TYPE           = "gamma"        # "gamma" or "lognormal"
 SELLER_VALUE        = 0.0            # Myerson seller valuation (v_0), usually 0
 
@@ -102,7 +103,7 @@ WHERE acd.event_date BETWEEN '{train_start_date}' AND '{train_end_date}'
   AND acd.placement LIKE '%SPONSORED_PRODUCTS%'
   AND acd.auction_rank < {max_rank}
   AND acd.pricing_metadata IS NOT NULL
-  AND MOD(ABS(HASH(acd.campaign_id)), 100) < {sample_pct}
+  AND MOD(ABS(HASH(acd.auction_id)), 100) < {train_sample_pct}
 """
 
 # ── Evaluation SQL ────────────────────────────────────────────────────────────
@@ -122,14 +123,15 @@ WITH winners AS (
             * GET(PARSE_JSON(acd.pricing_metadata), 'nextBid')::INT / 100.0        AS soft_reserve_dollars,
         COALESCE(acd.normalized_query, 'Unknown')                                  AS normalized_query,
         COALESCE(acd.l1_category_id::VARCHAR, 'Unknown')                           AS l1_category_id,
-        COALESCE(acd.collection_id, 'Unknown')                                     AS collection_id
+        COALESCE(acd.collection_id, 'Unknown')                                     AS collection_id,
+        acd.event_hour                                                              AS hour_bucket
     FROM edw.ads.ads_auction_candidates_event_delta acd
     WHERE acd.event_date BETWEEN '{eval_start_date}' AND '{eval_end_date}'
       AND acd.CURRENCY_ISO_TYPE IN ('USD')
       AND acd.placement LIKE '%SPONSORED_PRODUCTS%'
       AND acd.auction_rank = 0
       AND acd.pricing_metadata IS NOT NULL
-      AND MOD(ABS(HASH(acd.campaign_id)), 100) < {sample_pct}
+      AND MOD(ABS(HASH(acd.campaign_id)), 100) < {eval_sample_pct}
 ),
 clicked AS (
     SELECT
@@ -187,14 +189,14 @@ HAVING SUM(TOTAL_CX_AD_FEE_LOCAL) > 0
 def fetch_train_data(
     train_start_date: str = TRAIN_START_DATE,
     train_end_date: str = TRAIN_END_DATE,
-    sample_pct: int = SAMPLE_PCT,
+    train_sample_pct: int = TRAIN_SAMPLE_PCT,
     max_rank: int = MAX_RANK,
 ) -> pd.DataFrame:
     query = TRAINING_QUERY.format(
         train_start_date=train_start_date,
         train_end_date=train_end_date,
         max_rank=max_rank,
-        sample_pct=sample_pct,
+        train_sample_pct=train_sample_pct,
     )
     with get_connection() as conn:
         cursor = conn.cursor()
@@ -212,12 +214,12 @@ def fetch_train_data(
 def fetch_eval_data(
     eval_start_date: str = EVAL_START_DATE,
     eval_end_date: str = EVAL_END_DATE,
-    sample_pct: int = SAMPLE_PCT,
+    eval_sample_pct: int = EVAL_SAMPLE_PCT,
 ) -> pd.DataFrame:
     query = EVAL_QUERY.format(
         eval_start_date=eval_start_date,
         eval_end_date=eval_end_date,
-        sample_pct=sample_pct,
+        eval_sample_pct=eval_sample_pct,
     )
     with get_connection() as conn:
         cursor = conn.cursor()
@@ -229,6 +231,7 @@ def fetch_eval_data(
                 "soft_reserve_dollars", "hard_reserve_dollars"]:
         df[col] = pd.to_numeric(df[col], errors="coerce")
     df["event_timestamp"] = pd.to_datetime(df["event_timestamp"], errors="coerce")
+    df["hour_bucket"] = pd.to_numeric(df["hour_bucket"], errors="coerce").astype("Int64")
     df["campaign_id"] = df["campaign_id"].astype(str)
     return df
 
@@ -498,12 +501,6 @@ def evaluate_all_cohorts(
     """
     df = _add_cohort_columns(eval_df)
     df = df[df["placement_group"].isin(PLACEMENT_GROUP_ORDER)].copy()
-    # hour_bucket for DoubleDash comes from event_timestamp in eval data
-    df["hour_bucket"] = df["event_timestamp"].dt.hour.astype(str)
-    # Recompute cohort_key with the corrected hour_bucket
-    conditions = [df["placement_group"] == pg for pg in PLACEMENT_GROUP_ORDER]
-    choices    = [df[COHORT_DIM[pg]] for pg in PLACEMENT_GROUP_ORDER]
-    df["cohort_key"] = np.select(conditions, choices, default="Other")
 
     cohorts = (
         df.groupby(["placement_group", "cohort_key"])
@@ -728,9 +725,11 @@ def plot_optimal_reserves(optimal_hr_map: dict) -> None:
 print(f"Training window: {TRAIN_START_DATE} – {TRAIN_END_DATE}")
 print(f"Distribution: {DIST_TYPE}  |  MIN_COHORT_BIDS={MIN_COHORT_BIDS}  |  MAX_RANK={MAX_RANK}")
 
-# train_df = fetch_train_data()
-# train_df.to_pickle("data/simulation_ctx_train_df.pkl")
-train_df = pd.read_pickle("data/simulation_ctx_train_df.pkl")
+train_df = fetch_train_data()
+train_df.to_pickle(f"data/simulation_ctx_train_{TRAIN_START_DATE}_to_{TRAIN_END_DATE}_smpl_{TRAIN_SAMPLE_PCT}_df.pkl")
+
+# train_df = pd.read_pickle("data/simulation_ctx_train_df.pkl")
+
 print(f"  Training rows: {len(train_df):,}")
 
 #%% Fit distributions and solve Myerson's equation per cohort
@@ -750,31 +749,40 @@ for pg in PLACEMENT_GROUP_ORDER:
 
 #%% Evaluation: fetch clicked winners from eval date range
 print(f"\nFetching evaluation data ({EVAL_START_DATE} – {EVAL_END_DATE})...")
-# eval_df = fetch_eval_data()
-# eval_df.to_pickle("data/simulation_ctx_eval_df.pkl")
-eval_df = pd.read_pickle("data/simulation_ctx_eval_df.pkl")
+
+eval_df = fetch_eval_data()
+eval_df.to_pickle(f"data/simulation_ctx_eval_{EVAL_START_DATE}_to_{EVAL_END_DATE}_smpl_{EVAL_SAMPLE_PCT}_df.pkl")
+
+# eval_df = pd.read_pickle("data/simulation_ctx_eval_df.pkl")
+
 print(f"  Eval clicked winners: {len(eval_df):,}")
 print(f"  Eval total CPC ($):   {eval_df['cpc_dollars'].sum():,.2f}")
 
 #%% Fetch budget and ROAS data
 print(f"\nFetching campaign daily budgets for {EVAL_END_DATE}...")
-# budget_df = fetch_budget()
-# budget_df.to_pickle("data/simulation_ctx_budget_df.pkl")
-budget_df = pd.read_pickle("data/simulation_ctx_budget_df.pkl")
+
+budget_df = fetch_budget()
+budget_df.to_pickle("data/simulation_ctx_budget_df.pkl")
+
+# budget_df = pd.read_pickle("data/simulation_ctx_budget_df.pkl")
+
 budget_map = budget_df.set_index("campaign_id")["campaign_daily_budget_dollars"].to_dict()
 print(f"  Campaigns with budget: {len(budget_map):,}")
 
 print(f"\nFetching ROAS data ({EVAL_START_DATE} – {EVAL_END_DATE})...")
-# roas_df = fetch_roas()
-# roas_df.to_pickle("data/simulation_ctx_roas_df.pkl")
-roas_df = pd.read_pickle("data/simulation_ctx_roas_df.pkl")
+
+roas_df = fetch_roas()
+roas_df.to_pickle("data/simulation_ctx_roas_df.pkl")
+
+# roas_df = pd.read_pickle("data/simulation_ctx_roas_df.pkl")
+
 print(f"  Campaigns with ROAS:   {len(roas_df):,}")
 
 #%% Run evaluation replay
 print("\nRunning auction replay with Myerson-optimal reserves...")
 # Add cohort columns to eval_df for ROAS computation downstream
 eval_df["placement_group"] = eval_df["placement"].map(PLACEMENT_TO_GROUP).fillna("Other")
-eval_df["hour_bucket"] = eval_df["event_timestamp"].dt.hour.astype(str)
+eval_df["hour_bucket"] = eval_df["hour_bucket"].astype(str)
 conditions = [eval_df["placement_group"] == pg for pg in PLACEMENT_GROUP_ORDER]
 choices    = [eval_df[COHORT_DIM[pg]] for pg in PLACEMENT_GROUP_ORDER]
 eval_df["cohort_key"] = np.select(conditions, choices, default="Other")
@@ -836,7 +844,7 @@ new_hr_vec = eval_df.apply(
 )
 
 bid = eval_df["auction_bid_dollars"]
-gsp = eval_df["gsp_dollars"]
+gsp = eval_df["raw_gsp_dollars"]
 sr  = eval_df["soft_reserve_dollars"]
 cpc = eval_df["cpc_dollars"]
 
@@ -892,9 +900,10 @@ for pg in PLACEMENT_GROUP_ORDER:
     print(f"\n  ── {pg} {'─' * 63}")
     print(f"  {hdr}")
     for _, row in sub.iterrows():
+        hr_str = f"${row['new_hr_applied']:>6.4f}" if pd.notna(row.get("new_hr_applied")) else "   N/A  "
         print(
             f"  {str(row['cohort_key']):<40}"
-            f" ${row['new_hr_applied']:>6.4f}"
+            f" {hr_str}"
             f" {row['mr_before']:>10.4%}"
             f" {row['mr_after']:>10.4%}"
             f" {row['mr_delta']:>+8.4%}"
