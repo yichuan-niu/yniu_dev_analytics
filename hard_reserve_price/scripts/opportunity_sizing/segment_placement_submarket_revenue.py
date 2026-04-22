@@ -358,7 +358,7 @@ print("Fetching auction data from Snowflake (clicked winners only)...")
 # df = fetch_data()
 # df.to_pickle("data/segment_placement_submarket_revenue_df.pkl")
 
-df = pd.read_pickle("data/segment_placement_submarket_revenue_df.pkl")
+df = pd.read_pickle("../data/segment_placement_submarket_revenue_df.pkl")
 print(f"  Total clicked winners: {len(df):,}")
 print(f"  Total CPC ($):         {df['cpc_dollars'].sum():,.2f}")
 
@@ -367,7 +367,7 @@ print(f"\nFetching ROAS data ({ROAS_SNAPSHOT_START} – {ROAS_SNAPSHOT_END})..."
 # roas_df = fetch_roas()
 # roas_df.to_pickle("data/segment_placement_submarket_roas_df.pkl")
 
-roas_df = pd.read_pickle("data/segment_placement_submarket_roas_df.pkl")
+roas_df = pd.read_pickle("../data/segment_placement_submarket_roas_df.pkl")
 print(f"  Campaigns with ROAS data: {len(roas_df):,}")
 
 #%%
@@ -375,7 +375,7 @@ print(f"\nFetching campaign daily budgets for {EVENT_DATE}...")
 # budget_df = fetch_budget()
 # budget_df.to_pickle("data/segment_placement_submarket_budget_df.pkl")
 
-budget_df = pd.read_pickle("data/segment_placement_submarket_budget_df.pkl")
+budget_df = pd.read_pickle("../data/segment_placement_submarket_budget_df.pkl")
 budget_map = budget_df.set_index("campaign_id")["campaign_daily_budget_dollars"].to_dict()
 print(f"  Campaigns with known budget: {len(budget_map):,}")
 

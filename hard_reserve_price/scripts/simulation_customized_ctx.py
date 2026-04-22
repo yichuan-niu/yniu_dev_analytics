@@ -1,11 +1,17 @@
-import os
-
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
-import snowflake.connector
 from scipy.optimize import minimize, brentq
 from scipy.stats import gamma as gamma_dist, lognorm
+
+from simulation_customized_ctx_config import (
+    PLACEMENT_GROUPS,
+    PLACEMENT_TO_GROUP,
+    PLACEMENT_GROUP_ORDER,
+    COHORT_DIM,
+    FLOOR_PRICES,
+    get_connection,
+)
 
 plt.close("all")
 
@@ -21,57 +27,6 @@ MIN_COHORT_BIDS     = 100            # min bid rows per cohort to fit a distribu
 DIST_TYPE           = "gamma"        # "gamma" or "lognormal"
 SELLER_VALUE        = 0.0            # Myerson seller valuation (v_0), usually 0
 MAX_RESERVE_INC     = 5.0            # max allowed r* above floor (caps extreme tail fits)
-
-# Default hard reserve / floor price per placement group (USD).
-# Used as truncation point in truncated MLE and as the minimum allowed reserve.
-FLOOR_PRICES = {
-    "Search":     0.60,
-    "Category":   0.40,
-    "Collection": 0.30,
-    "DoubleDash": 0.80,
-}
-
-PLACEMENT_GROUPS = {
-    "Search": [
-        "PLACEMENT_TYPE_SPONSORED_PRODUCTS_SEARCH",
-        "PLACEMENT_TYPE_SPONSORED_PRODUCTS_GLOBAL_SEARCH",
-    ],
-    "Category": [
-        "PLACEMENT_TYPE_SPONSORED_PRODUCTS_CATEGORY_L1",
-        "PLACEMENT_TYPE_SPONSORED_PRODUCTS_CATEGORY_L2",
-    ],
-    "Collection": [
-        "PLACEMENT_TYPE_SPONSORED_PRODUCTS_COLLECTION",
-    ],
-    "DoubleDash": [
-        "PLACEMENT_TYPE_SPONSORED_PRODUCTS_DOUBLE_DASH_STORE_COLLECTION",
-        "PLACEMENT_TYPE_SPONSORED_PRODUCTS_DOUBLE_DASH_STORE_CATEGORY_L1",
-        "PLACEMENT_TYPE_SPONSORED_PRODUCTS_DOUBLE_DASH_STORE_CATEGORY_L2",
-        "PLACEMENT_TYPE_SPONSORED_PRODUCTS_DOUBLE_DASH_STORE_SEARCH",
-    ],
-}
-PLACEMENT_TO_GROUP = {p: g for g, ps in PLACEMENT_GROUPS.items() for p in ps}
-
-# Secondary cohort dimension per placement group (matches segment_placement_ctx.py).
-COHORT_DIM = {
-    "Search":     "normalized_query",
-    "Category":   "l1_category_id",
-    "Collection": "collection_id",
-    "DoubleDash": "hour_bucket",
-}
-PLACEMENT_GROUP_ORDER = ["Search", "Category", "Collection", "DoubleDash"]
-
-# ── Snowflake connection ──────────────────────────────────────────────────────
-def get_connection() -> snowflake.connector.SnowflakeConnection:
-    return snowflake.connector.connect(
-        user=os.environ["SNOWFLAKE_USER"],
-        password=os.environ["SNOWFLAKE_PASSWORD"],
-        account=os.environ["SNOWFLAKE_ACCOUNT"],
-        warehouse="TEAM_ADS_DEMAND_REPORTING_2XL",
-        role=os.environ["SNOWFLAKE_ROLE"],
-        database="edw",
-        schema="ads",
-    )
 
 
 # ── Training SQL ──────────────────────────────────────────────────────────────
@@ -116,7 +71,8 @@ WITH winners AS (
         COALESCE(acd.normalized_query, 'Unknown')                                  AS normalized_query,
         COALESCE(acd.l1_category_id::VARCHAR, 'Unknown')                           AS l1_category_id,
         COALESCE(acd.collection_id, 'Unknown')                                     AS collection_id,
-        acd.event_hour                                                              AS hour_bucket
+        acd.event_hour                                                              AS hour_bucket,
+        acd.event_timestamp                                                            AS auction_timestamp
     FROM edw.ads.ads_auction_candidates_event_delta acd
     WHERE acd.event_date BETWEEN '{eval_start_date}' AND '{eval_end_date}'
       AND acd.CURRENCY_ISO_TYPE IN ('USD')
@@ -151,7 +107,7 @@ SELECT
     raw_gsp_dollars,
     soft_reserve_dollars,
     hard_reserve_dollars,
-    clicked.event_timestamp
+    winners.auction_timestamp
 FROM winners
 INNER JOIN clicked ON winners.auction_id = clicked.ad_auction_id
 """
@@ -223,7 +179,7 @@ def fetch_eval_data(
     df["soft_reserve_dollars"] = df["soft_reserve_dollars"].fillna(0.0)
     df["raw_gsp_dollars"] = df["raw_gsp_dollars"].fillna(0.0)
     df["event_date"] = pd.to_datetime(df["event_date"], errors="coerce").dt.date.astype(str)
-    df["event_timestamp"] = pd.to_datetime(df["event_timestamp"], errors="coerce")
+    df["auction_timestamp"] = pd.to_datetime(df["auction_timestamp"], errors="coerce")
     df["hour_bucket"] = pd.to_numeric(df["hour_bucket"], errors="coerce").astype("Int64")
     df["auction_id"] = df["auction_id"].astype(str)
     df["campaign_id"] = df["campaign_id"].astype(str)
@@ -363,7 +319,7 @@ def myerson_optimal_reserve(
     try:
         if vv(floor + 1e-6) >= 0:
             return None
-        r_star = brentq(vv, 1e-6, hi, xtol=1e-4)
+        r_star = brentq(vv, floor + 1e-6, hi, xtol=1e-4)
     except ValueError:
         return None
     if r_star <= floor:
@@ -493,7 +449,7 @@ def _apply_budget_caps(
 
     for dt in sorted(budget_maps.keys()):
         day = df.loc[df["event_date"] == dt].sort_values(
-            "event_timestamp", na_position="last"
+            "auction_timestamp", na_position="last"
         )
         if day.empty:
             continue

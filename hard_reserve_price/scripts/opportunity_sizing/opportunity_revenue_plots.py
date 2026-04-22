@@ -226,7 +226,7 @@ def plot_revenue_lift(
 print("Fetching data from Snowflake...")
 # df = fetch_data()
 # df.to_pickle("data/opportunity_revenue_df.pkl")
-df = pd.read_pickle("data/opportunity_revenue_df.pkl")
+df = pd.read_pickle("../data/opportunity_revenue_df.pkl")
 
 print(f"  Total winners:        {len(df):,}")
 print(f"  Case 1 opportunities: {df['c1_headroom'].notna().sum():,}")
