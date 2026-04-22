@@ -20,6 +20,7 @@ MAX_RANK            = 5              # use auction_rank < MAX_RANK for training 
 MIN_COHORT_BIDS     = 100            # min bid rows per cohort to fit a distribution
 DIST_TYPE           = "gamma"        # "gamma" or "lognormal"
 SELLER_VALUE        = 0.0            # Myerson seller valuation (v_0), usually 0
+MAX_RESERVE_INC     = 5.0            # max allowed r* above floor (caps extreme tail fits)
 
 # Default hard reserve / floor price per placement group (USD).
 # Used as truncation point in truncated MLE and as the minimum allowed reserve.
@@ -74,19 +75,11 @@ def get_connection() -> snowflake.connector.SnowflakeConnection:
 
 
 # ── Training SQL ──────────────────────────────────────────────────────────────
-# Pulls all auction candidates (rank < MAX_RANK) from auctions that had a click,
-# over the N-day training window.  Floor filtering is done in Python per group.
+# Pulls all auction candidates (rank < MAX_RANK) over the training window.
+# Uses all auctions (not just clicked) for unbiased bid distribution fitting.
+# Floor filtering is done in Python per group.
 # event_hour from the auction table is used as hour_bucket for DoubleDash.
 TRAINING_QUERY = """
-WITH clicked_auctions AS (
-    SELECT DISTINCT ad_auction_id
-    FROM proddb.public.fact_item_card_click_dedup
-    WHERE event_date BETWEEN '{train_start_date}' AND '{train_end_date}'
-      AND is_sponsored = 1
-      AND is_cpc = 1
-      AND ad_auction_id IS NOT NULL
-      AND campaign_id IS NOT NULL
-)
 SELECT
     acd.placement,
     acd.auction_bid / 100.0                                             AS auction_bid_dollars,
@@ -96,7 +89,6 @@ SELECT
     COALESCE(acd.collection_id, 'Unknown')                             AS collection_id,
     acd.event_hour                                                      AS hour_bucket
 FROM edw.ads.ads_auction_candidates_event_delta acd
-INNER JOIN clicked_auctions ON acd.auction_id = clicked_auctions.ad_auction_id
 WHERE acd.event_date BETWEEN '{train_start_date}' AND '{train_end_date}'
   AND acd.CURRENCY_ISO_TYPE IN ('USD')
   AND acd.placement LIKE '%SPONSORED_PRODUCTS%'
@@ -203,7 +195,6 @@ def fetch_train_data(
     df["auction_bid_dollars"] = pd.to_numeric(df["auction_bid_dollars"], errors="coerce")
     df["hard_reserve_dollars"] = pd.to_numeric(df["hard_reserve_dollars"], errors="coerce")
     df["hour_bucket"] = pd.to_numeric(df["hour_bucket"], errors="coerce").astype("Int64")
-    df["campaign_id"] = df.get("campaign_id", pd.Series(dtype=str)).astype(str)
     return df
 
 
@@ -292,6 +283,8 @@ def fit_gamma_truncated(bids: np.ndarray, floor: float):
         method="L-BFGS-B",
         bounds=[(1e-3, None), (1e-6, None)],
     )
+    if not result.success:
+        raise RuntimeError(f"Gamma MLE failed to converge: {result.message}")
     alpha, theta = result.x
     return gamma_dist(a=alpha, scale=theta)
 
@@ -316,6 +309,8 @@ def fit_lognormal_truncated(bids: np.ndarray, floor: float):
         method="L-BFGS-B",
         bounds=[(None, None), (1e-6, None)],
     )
+    if not result.success:
+        raise RuntimeError(f"Lognormal MLE failed to converge: {result.message}")
     mu, sigma = result.x
     return lognorm(s=sigma, scale=np.exp(mu))
 
@@ -341,13 +336,15 @@ def myerson_optimal_reserve(
     floor: float,
     seller_value: float = SELLER_VALUE,
     hi: float = 50.0,
+    max_increment: float = MAX_RESERVE_INC,
 ):
     """
     Find r* where ψ(r*) = seller_value using Brent's bisection method.
 
     Returns the optimal reserve price if r* > floor, else None
     (meaning the theoretically optimal reserve is at or below the current floor,
-    so no change is needed).
+    so no change is needed).  r* is capped at floor + max_increment to prevent
+    extreme reserves from heavy-tailed fits.
     """
     vv = lambda v: virtual_valuation(v, dist) - seller_value
     # If virtual valuation at just above the floor is already >= 0,
@@ -358,7 +355,9 @@ def myerson_optimal_reserve(
         r_star = brentq(vv, 1e-6, hi, xtol=1e-4)
     except ValueError:
         return None
-    return r_star if r_star > floor else None
+    if r_star <= floor:
+        return None
+    return min(r_star, floor + max_increment)
 
 
 # ── Training: fit per-cohort distribution and solve Myerson ──────────────────
