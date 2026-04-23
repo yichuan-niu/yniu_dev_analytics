@@ -27,6 +27,7 @@ TRAIN_SAMPLE_PCT    = 1              # auction-level sampling for training (MOD 
 EVAL_SAMPLE_PCT     = 100            # campaign-level sampling for eval (100 = no sampling)
 MAX_RANK            = 5              # use auction_rank < MAX_RANK for training bids
 MIN_COHORT_BIDS     = 1000           # min bid rows per cohort to fit a distribution
+TOP_N_COHORTS       = 100           # per placement group: keep only top-N cohorts by bid count (None = no limit)
 DIST_TYPE           = "gamma"        # "gamma" or "lognormal"
 LOGNORM_SIGMA_MAX   = 1.2            # max sigma for lognormal (ensures monotone virtual valuation)
 SELLER_VALUE        = 0.0            # Myerson seller valuation (v_0), usually 0
@@ -438,6 +439,7 @@ def train_optimal_reserves(
     train_df: pd.DataFrame,
     min_cohort_bids: int = MIN_COHORT_BIDS,
     dist_type: str = DIST_TYPE,
+    top_n_cohorts: "int | None" = TOP_N_COHORTS,
 ) -> dict:
     """
     For each (placement_group, cohort_key) cohort with enough bid data:
@@ -445,6 +447,9 @@ def train_optimal_reserves(
       2. Fit Gamma (or lognormal) via truncated MLE.
       3. Solve Myerson's virtual valuation = 0 with Brent's method.
       4. Keep r* only if r* > floor.
+
+    If top_n_cohorts is set, only the top-N cohorts by bid count per
+    placement group are considered (after the min_cohort_bids filter).
 
     Returns dict[(placement_group, cohort_key)] = r_star.
     """
@@ -458,6 +463,21 @@ def train_optimal_reserves(
         ["placement_group", "cohort_key"]
     )
 
+    # Apply top-N filter per placement group (by bid count, descending)
+    if top_n_cohorts is not None:
+        bid_counts = {
+            (pg, ck): len(rows) for (pg, ck), rows in grouped
+        }
+        allowed = set()
+        for pg in PLACEMENT_GROUP_ORDER:
+            pg_cohorts = sorted(
+                [(ck, cnt) for (g, ck), cnt in bid_counts.items() if g == pg],
+                key=lambda x: x[1], reverse=True,
+            )
+            allowed.update((pg, ck) for ck, _ in pg_cohorts[:top_n_cohorts])
+    else:
+        allowed = None
+
     n_cohorts = len(grouped)
     print(f"  Total cohorts: {n_cohorts}")
     for i, ((pg, ck), cohort_rows) in enumerate(grouped, 1):
@@ -469,10 +489,12 @@ def train_optimal_reserves(
             "auction_bid_dollars",
         ].to_numpy(dtype=float)
 
+        if allowed is not None and (pg, ck) not in allowed:
+            continue
+
         if len(bids) < min_cohort_bids:
             skipped_small += 1
-            pct = i / n_cohorts * 100
-            # print(f"  [{pg} / {ck}]  skipped (n={len(bids):,} < {min_cohort_bids:,})  ({pct:.0f}%)")
+            # print(f"  [{pg} / {ck}]  skipped (n={len(bids):,} < {min_cohort_bids:,})")
             continue
 
         try:
