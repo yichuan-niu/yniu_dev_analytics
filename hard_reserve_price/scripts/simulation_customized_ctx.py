@@ -88,8 +88,8 @@ SELECT
     acd.auction_rank,
     acd.auction_bid / 100.0                                                     AS auction_bid_dollars,
     acd.ad_score / 100.0                                                        AS ad_score_dollars,
-    GET(PARSE_JSON(acd.pricing_metadata), 'hardReserve')::INT / 100.0          AS hard_reserve_dollars,
-    GET(PARSE_JSON(acd.pricing_metadata), 'softReserveBeta')::FLOAT             AS soft_reserve_beta,
+    COALESCE(GET(PARSE_JSON(acd.pricing_metadata), 'hardReserve')::INT, 0) / 100.0   AS hard_reserve_dollars,
+    COALESCE(GET(PARSE_JSON(acd.pricing_metadata), 'softReserveBeta')::FLOAT, 0)    AS soft_reserve_beta,
     COALESCE(acd.normalized_query, 'Unknown')                                  AS normalized_query,
     COALESCE(acd.l1_category_id::VARCHAR, 'Unknown')                           AS l1_category_id,
     COALESCE(acd.collection_id, 'Unknown')                                     AS collection_id,
@@ -100,7 +100,6 @@ WHERE acd.event_date BETWEEN '{eval_start_date}' AND '{eval_end_date}'
   AND acd.CURRENCY_ISO_TYPE IN ('USD')
   AND acd.placement LIKE '%SPONSORED_PRODUCTS%'
   AND acd.auction_rank < {max_rank}
-  AND acd.pricing_metadata IS NOT NULL
   AND acd.auction_id IN (SELECT auction_id FROM sampled_clicked_auctions)
 """
 
@@ -572,9 +571,7 @@ def _apply_budget_caps(
         day_budget = budget_maps[dt]
 
         # ── Baseline: budget tracked by campaign_id ───────────────────────
-        budgets_bl = day["campaign_id"].map(
-            lambda c, b=day_budget: b.get(c, float("inf"))
-        )
+        budgets_bl = day["campaign_id"].map(day_budget).fillna(float("inf"))
         cum_bl = day.groupby("campaign_id")["cpc_baseline"].cumsum()
         remaining_bl = (budgets_bl - (cum_bl - day["cpc_baseline"])).clip(lower=0)
         df.loc[day.index, "capped_baseline"] = (
@@ -582,9 +579,7 @@ def _apply_budget_caps(
         )
 
         # ── New: budget tracked by new_campaign_id ────────────────────────
-        budgets_nw = day["new_campaign_id"].map(
-            lambda c, b=day_budget: b.get(c, float("inf"))
-        )
+        budgets_nw = day["new_campaign_id"].map(day_budget).fillna(float("inf"))
         cum_nw = day.groupby("new_campaign_id")["cpc_new"].cumsum()
         remaining_nw = (budgets_nw - (cum_nw - day["cpc_new"])).clip(lower=0)
         df.loc[day.index, "capped_new"] = (
