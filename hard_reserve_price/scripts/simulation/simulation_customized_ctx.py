@@ -466,7 +466,8 @@ def train_optimal_reserves(
     # Apply top-N filter per placement group (by bid count, descending)
     if top_n_cohorts is not None:
         bid_counts = {
-            (pg, ck): len(rows) for (pg, ck), rows in grouped
+            (pg, ck): (rows["auction_bid_dollars"] > rows["hard_reserve_dollars"]).sum()
+            for (pg, ck), rows in grouped
         }
         allowed = set()
         for pg in PLACEMENT_GROUP_ORDER:
