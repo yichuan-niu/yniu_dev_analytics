@@ -502,7 +502,7 @@ def train_optimal_reserves(
         try:
             dist = fit_distribution(bids, floor, dist_type)
             r_raw = myerson_optimal_reserve(dist, floor)
-            r_star = clip_reserve(r_raw, floor, label=f"[{pg} / {ck}] ")
+            r_star = clip_reserve(r_raw, floor, label=f"[{pg} / {_display_cohort_key(pg, ck)}] ")
         except Exception:
             skipped_solve += 1
             continue
@@ -965,10 +965,10 @@ for pg in PLACEMENT_GROUP_ORDER:
 #%% Evaluation: fetch all candidates for clicked auctions
 print(f"\nFetching evaluation data ({EVAL_START_DATE} – {EVAL_END_DATE})...")
 
-eval_all = fetch_eval_data()
-eval_all.to_pickle(f"../data/simulation_ctx_eval_{EVAL_START_DATE}_to_{EVAL_END_DATE}_smpl_{EVAL_SAMPLE_PCT}_df.pkl")
+# eval_all = fetch_eval_data()
+# eval_all.to_pickle(f"../data/simulation_ctx_eval_{EVAL_START_DATE}_to_{EVAL_END_DATE}_smpl_{EVAL_SAMPLE_PCT}_df.pkl")
 
-# eval_all = pd.read_pickle(f"../data/simulation_ctx_eval_{EVAL_START_DATE}_to_{EVAL_END_DATE}_smpl_{EVAL_SAMPLE_PCT}_df.pkl")
+eval_all = pd.read_pickle(f"../data/simulation_ctx_eval_{EVAL_START_DATE}_to_{EVAL_END_DATE}_smpl_{EVAL_SAMPLE_PCT}_df.pkl")
 
 print(f"  Eval candidate rows: {len(eval_all):,}")
 print(f"  Unique auctions:     {eval_all['auction_id'].nunique():,}")
