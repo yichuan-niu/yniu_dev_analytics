@@ -382,7 +382,7 @@ def plot_cpc(summary: pd.DataFrame, event_date: str = EVENT_DATE) -> None:
 #%%
 print("Fetching auction data from Snowflake (clicked winners only)...")
 # df = fetch_data()
-# df.to_pickle("data/segment_placement_query_L1_collection_df.pkl")
+# df.to_pickle("../data/segment_placement_query_L1_collection_df.pkl")
 
 df = pd.read_pickle("../data/segment_placement_query_L1_collection_df.pkl")
 
@@ -392,7 +392,7 @@ print(f"  Total CPC ($):         {df['cpc_dollars'].sum():,.2f}")
 #%%
 print(f"\nFetching ROAS data ({ROAS_SNAPSHOT_START} – {ROAS_SNAPSHOT_END})...")
 # roas_df = fetch_roas()
-# roas_df.to_pickle("data/segment_placement_query_L1_collection_roas_df.pkl")
+# roas_df.to_pickle("../data/segment_placement_query_L1_collection_roas_df.pkl")
 
 roas_df = pd.read_pickle("../data/segment_placement_query_L1_collection_roas_df.pkl")
 
@@ -401,7 +401,7 @@ print(f"  Campaigns with ROAS data: {len(roas_df):,}")
 #%%
 print(f"\nFetching campaign daily budgets for {EVENT_DATE}...")
 # budget_df = fetch_budget()
-# budget_df.to_pickle("data/segment_placement_query_L1_collection_budget_df.pkl")
+# budget_df.to_pickle("../data/segment_placement_query_L1_collection_budget_df.pkl")
 
 budget_df = pd.read_pickle("../data/segment_placement_query_L1_collection_budget_df.pkl")
 
