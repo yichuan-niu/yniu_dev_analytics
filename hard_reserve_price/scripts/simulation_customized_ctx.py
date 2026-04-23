@@ -86,7 +86,6 @@ SELECT
     acd.event_date,
     acd.auction_rank,
     acd.auction_bid / 100.0                                                     AS auction_bid_dollars,
-    acd.bid_price_unit_amount / 100.0                                           AS cpc_dollars,
     GET(PARSE_JSON(acd.pricing_metadata), 'cpcGsp')::INT / 100.0               AS raw_gsp_dollars,
     GET(PARSE_JSON(acd.pricing_metadata), 'hardReserve')::INT / 100.0          AS hard_reserve_dollars,
     GET(PARSE_JSON(acd.pricing_metadata), 'softReserveBeta')::FLOAT
@@ -168,7 +167,7 @@ def fetch_eval_data(
         columns = [col[0].lower() for col in cursor.description]
         rows = cursor.fetchall()
     df = pd.DataFrame(rows, columns=columns)
-    for col in ["auction_bid_dollars", "cpc_dollars", "raw_gsp_dollars",
+    for col in ["auction_bid_dollars", "raw_gsp_dollars",
                 "soft_reserve_dollars", "hard_reserve_dollars"]:
         df[col] = pd.to_numeric(df[col], errors="coerce")
     df["soft_reserve_dollars"] = df["soft_reserve_dollars"].fillna(0.0)
@@ -451,6 +450,7 @@ def resolve_auction_outcomes(
     rank0["new_campaign_id"] = np.where(
         survives, rank0["campaign_id"], None
     )
+    rank0["new_bid"] = np.where(survives, bid0, np.nan)
 
     # ── Runner-up promotion for auctions where rank-0 is filtered ─────────
     needs_promo = rank0.loc[rank0["cpc_new"].isna(), "auction_id"]
@@ -479,8 +479,9 @@ def resolve_auction_outcomes(
             )
 
             promo = (
-                best[["auction_id", "_promo_cpc", "campaign_id"]]
-                .rename(columns={"campaign_id": "_promo_cid"})
+                best[["auction_id", "_promo_cpc", "campaign_id", "auction_bid_dollars"]]
+                .rename(columns={"campaign_id": "_promo_cid",
+                                 "auction_bid_dollars": "_promo_bid"})
                 .set_index("auction_id")
             )
             rank0 = rank0.merge(
@@ -490,10 +491,12 @@ def resolve_auction_outcomes(
             mask = rank0["cpc_new"].isna()
             rank0.loc[mask, "cpc_new"] = rank0.loc[mask, "_promo_cpc"]
             rank0.loc[mask, "new_campaign_id"] = rank0.loc[mask, "_promo_cid"]
-            rank0 = rank0.drop(columns=["_promo_cpc", "_promo_cid"])
+            rank0.loc[mask, "new_bid"] = rank0.loc[mask, "_promo_bid"]
+            rank0 = rank0.drop(columns=["_promo_cpc", "_promo_cid", "_promo_bid"])
 
     # Auctions where no candidate is eligible → 0 revenue
     rank0["cpc_new"] = rank0["cpc_new"].fillna(0.0)
+    rank0["new_bid"] = rank0["new_bid"].fillna(0.0)
     rank0["new_campaign_id"] = rank0["new_campaign_id"].fillna(
         rank0["campaign_id"]
     )
@@ -816,7 +819,7 @@ eval_all.to_pickle(f"data/simulation_ctx_eval_{EVAL_START_DATE}_to_{EVAL_END_DAT
 print(f"  Eval candidate rows: {len(eval_all):,}")
 print(f"  Unique auctions:     {eval_all['auction_id'].nunique():,}")
 rank0_only = eval_all[eval_all["auction_rank"] == 0]
-print(f"  Eval total CPC ($):  {rank0_only['cpc_dollars'].sum():,.2f}")
+print(f"  Eval total CPC ($):  (derived from formula after resolve_auction_outcomes)")
 
 #%% Fetch budget and ROAS data
 print(f"\nFetching campaign daily budgets ({EVAL_START_DATE} – {EVAL_END_DATE})...")
@@ -893,11 +896,13 @@ plot_cpc(summary)
 # with the revenue lift and ROAS calculations (same formula, same budget caps).
 
 bid = eval_df["auction_bid_dollars"]
+new_bid = eval_df["new_bid"]
 
 # ── Global monetization rate ──────────────────────────────────────────────────
 total_bid = bid.sum()
+total_new_bid = new_bid.sum()
 mr_before_global = eval_df["capped_baseline"].sum() / total_bid if total_bid > 0 else np.nan
-mr_after_global  = eval_df["capped_new"].sum() / total_bid if total_bid > 0 else np.nan
+mr_after_global  = eval_df["capped_new"].sum() / total_new_bid if total_new_bid > 0 else np.nan
 
 print(f"\n{'─' * 55}")
 print(f"{'Monetization Rate (MR = CPC / bid)':^55}")
@@ -912,13 +917,18 @@ cohort_mr = (
     eval_df.groupby(["placement_group", "cohort_key"])
     .agg(
         bid_sum=("auction_bid_dollars", "sum"),
+        new_bid_sum=("new_bid", "sum"),
         cpc_sum=("capped_baseline", "sum"),
         new_cpc_sum=("capped_new", "sum"),
     )
     .reset_index()
 )
 cohort_mr["mr_before"] = cohort_mr["cpc_sum"]     / cohort_mr["bid_sum"]
-cohort_mr["mr_after"]  = cohort_mr["new_cpc_sum"] / cohort_mr["bid_sum"]
+cohort_mr["mr_after"]  = np.where(
+    cohort_mr["new_bid_sum"] > 0,
+    cohort_mr["new_cpc_sum"] / cohort_mr["new_bid_sum"],
+    0.0,
+)
 cohort_mr["mr_delta"]  = cohort_mr["mr_after"] - cohort_mr["mr_before"]
 
 # Merge with summary for new_hr_applied / r_star
