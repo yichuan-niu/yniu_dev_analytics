@@ -5,6 +5,7 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 from scipy.optimize import minimize, brentq
+from scipy.special import gammainc as _gammainc, gammaln as _gammaln, digamma as _digamma, ndtr as _ndtr
 from scipy.stats import gamma as gamma_dist, lognorm
 
 from simulation_customized_ctx_config import (
@@ -25,7 +26,7 @@ EVAL_END_DATE       = "2026-04-02"   # evaluation window end (inclusive)
 TRAIN_SAMPLE_PCT    = 1              # auction-level sampling for training (MOD HASH < TRAIN_SAMPLE_PCT)
 EVAL_SAMPLE_PCT     = 100            # campaign-level sampling for eval (100 = no sampling)
 MAX_RANK            = 5              # use auction_rank < MAX_RANK for training bids
-MIN_COHORT_BIDS     = 1000           # min bid rows per cohort to fit a distribution
+MIN_COHORT_BIDS     = 10000          # min bid rows per cohort to fit a distribution
 DIST_TYPE           = "gamma"        # "gamma" or "lognormal"
 LOGNORM_SIGMA_MAX   = 1.2            # max sigma for lognormal (ensures monotone virtual valuation)
 SELLER_VALUE        = 0.0            # Myerson seller valuation (v_0), usually 0
@@ -225,14 +226,42 @@ def fetch_sales(
 
 
 # ── Distribution fitting (truncated MLE) ─────────────────────────────────────
-def _gamma_nll(params, bids: np.ndarray, floor: float) -> float:
-    """Negative log-likelihood for Gamma truncated from below at floor."""
+def _gamma_nll_and_grad(params, sum_log_bids, sum_bids, n, floor, log_floor):
+    """NLL and gradient for Gamma truncated from below at floor."""
     alpha, theta = params
-    d = gamma_dist(a=alpha, scale=theta)
-    surv = 1.0 - d.cdf(floor)
+    if alpha <= 0 or theta <= 0:
+        return 1e18, np.array([0.0, 0.0])
+    u = floor / theta
+    surv = 1.0 - _gammainc(alpha, u)
     if surv <= 0:
-        return 1e18
-    return -(np.sum(d.logpdf(bids)) - len(bids) * np.log(surv))
+        return 1e18, np.array([0.0, 0.0])
+    log_theta = np.log(theta)
+    log_surv = np.log(surv)
+
+    # vectorized NLL using precomputed sufficient statistics
+    nll = (-(alpha - 1.0) * sum_log_bids
+           + sum_bids / theta
+           + n * alpha * log_theta
+           + n * _gammaln(alpha)
+           + n * log_surv)
+
+    # pdf at floor (log-space for stability)
+    log_pdf_floor = ((alpha - 1.0) * log_floor - floor / theta
+                     - alpha * log_theta - _gammaln(alpha))
+    pdf_floor = np.exp(log_pdf_floor)
+
+    # d(log surv)/d(theta): analytical
+    d_log_surv_dtheta = (floor / theta) * pdf_floor / surv
+
+    # d(log surv)/d(alpha): central finite difference on gammainc
+    eps = 1e-7 * max(abs(alpha), 1.0)
+    d_gammainc_da = (_gammainc(alpha + eps, u) - _gammainc(alpha - eps, u)) / (2.0 * eps)
+    d_log_surv_dalpha = -d_gammainc_da / surv
+
+    grad_alpha = -sum_log_bids + n * log_theta + n * _digamma(alpha) + n * d_log_surv_dalpha
+    grad_theta = -sum_bids / theta**2 + n * alpha / theta + n * d_log_surv_dtheta
+
+    return nll, np.array([grad_alpha, grad_theta])
 
 
 def fit_gamma_truncated(bids: np.ndarray, floor: float):
@@ -242,12 +271,20 @@ def fit_gamma_truncated(bids: np.ndarray, floor: float):
     v = v if v > 0 else m
     theta0 = v / m
     alpha0 = m / theta0
+    # precompute sufficient statistics
+    n = len(bids)
+    log_bids = np.log(bids)
+    sum_log_bids = log_bids.sum()
+    sum_bids = bids.sum()
+    log_floor = np.log(floor)
     result = minimize(
-        _gamma_nll,
+        _gamma_nll_and_grad,
         x0=[alpha0, theta0],
-        args=(bids, floor),
+        args=(sum_log_bids, sum_bids, n, floor, log_floor),
         method="L-BFGS-B",
+        jac=True,
         bounds=[(1e-3, None), (1e-6, None)],
+        options={"ftol": 1e-10, "gtol": 1e-4},
     )
     if not result.success:
         raise RuntimeError(f"Gamma MLE failed to converge: {result.message}")
@@ -255,14 +292,34 @@ def fit_gamma_truncated(bids: np.ndarray, floor: float):
     return gamma_dist(a=alpha, scale=theta)
 
 
-def _lognorm_nll(params, bids: np.ndarray, floor: float) -> float:
-    """Negative log-likelihood for Lognormal truncated from below at floor."""
+_INV_SQRT_2PI = 1.0 / np.sqrt(2.0 * np.pi)
+
+
+def _lognorm_nll_and_grad(params, sum_log_bids, sum_log_bids_sq, n, log_floor):
+    """NLL and analytical gradient for Lognormal truncated from below at floor."""
     mu, sigma = params
-    d = lognorm(s=sigma, scale=np.exp(mu))
-    surv = 1.0 - d.cdf(floor)
+    if sigma <= 0:
+        return 1e18, np.array([0.0, 0.0])
+    z_f = (log_floor - mu) / sigma
+    surv = 1.0 - _ndtr(z_f)       # survival = 1 - Phi(z_f)
     if surv <= 0:
-        return 1e18
-    return -(np.sum(d.logpdf(bids)) - len(bids) * np.log(surv))
+        return 1e18, np.array([0.0, 0.0])
+
+    SS = sum_log_bids_sq - 2.0 * mu * sum_log_bids + n * mu**2
+    log_surv = np.log(surv)
+
+    # vectorized NLL using precomputed sufficient statistics
+    nll = (sum_log_bids + n * np.log(sigma) + n * 0.5 * np.log(2.0 * np.pi)
+           + SS / (2.0 * sigma**2) + n * log_surv)
+
+    # standard normal pdf at z_f
+    phi_zf = _INV_SQRT_2PI * np.exp(-0.5 * z_f**2)
+    trunc = n * phi_zf / (sigma * surv)
+
+    grad_mu = (n * mu - sum_log_bids) / sigma**2 + trunc
+    grad_sigma = n / sigma - SS / sigma**3 + trunc * z_f
+
+    return nll, np.array([grad_mu, grad_sigma])
 
 
 def fit_lognormal_truncated(
@@ -274,12 +331,20 @@ def fit_lognormal_truncated(
     (required for a unique Myerson optimal reserve).
     """
     log_bids = np.log(bids)
+    # precompute sufficient statistics
+    n = len(bids)
+    sum_log_bids = log_bids.sum()
+    sum_log_bids_sq = (log_bids**2).sum()
+    log_floor = np.log(floor)
+    lb_std = log_bids.std()
     result = minimize(
-        _lognorm_nll,
-        x0=[log_bids.mean(), min(log_bids.std() if log_bids.std() > 0 else 0.5, sigma_max)],
-        args=(bids, floor),
+        _lognorm_nll_and_grad,
+        x0=[log_bids.mean(), min(lb_std if lb_std > 0 else 0.5, sigma_max)],
+        args=(sum_log_bids, sum_log_bids_sq, n, log_floor),
         method="L-BFGS-B",
+        jac=True,
         bounds=[(None, None), (1e-6, sigma_max)],
+        options={"ftol": 1e-10, "gtol": 1e-4},
     )
     if not result.success:
         raise RuntimeError(f"Lognormal MLE failed to converge: {result.message}")
@@ -307,29 +372,43 @@ def myerson_optimal_reserve(
     dist,
     floor: float,
     seller_value: float = SELLER_VALUE,
-    hi: float = 50.0,
-    max_increment: float = MAX_RESERVE_INC,
+    hi: float = 10.0,
 ):
     """
     Find r* where ψ(r*) = seller_value using Brent's bisection method.
 
-    Returns the optimal reserve price if r* > floor, else None
-    (meaning the theoretically optimal reserve is at or below the current floor,
-    so no change is needed).  r* is capped at floor + max_increment to prevent
-    extreme reserves from heavy-tailed fits.
+    Returns the raw r* (may be below floor or very large), or None if no root exists.
     """
     vv = lambda v: virtual_valuation(v, dist) - seller_value
-    # If virtual valuation at just above the floor is already >= 0,
-    # the optimal reserve <= floor — no improvement possible.
     try:
         if vv(floor + 1e-6) >= 0:
             return None
-        r_star = brentq(vv, floor + 1e-6, hi, xtol=1e-4)
+        return brentq(vv, floor + 1e-6, hi, xtol=1e-2)
     except ValueError:
         return None
-    if r_star <= floor:
+
+
+def clip_reserve(
+    r_star,
+    floor: float,
+    max_increment: float = MAX_RESERVE_INC,
+    label: str = "",
+):
+    """
+    Validate and cap a raw Myerson reserve.
+
+    Returns None (with a log message) if r* is missing or at/below floor,
+    otherwise caps at floor + max_increment.
+    """
+    if r_star is None:
         return None
-    return min(r_star, floor + max_increment)
+    if r_star <= floor:
+        print(f"  {label}r*=${r_star:.4f} <= floor=${floor:.2f}, skipping")
+        return None
+    capped = min(r_star, floor + max_increment)
+    if capped < r_star:
+        print(f"  {label}r*=${r_star:.4f} capped to ${capped:.4f} (floor+{max_increment})")
+    return capped
 
 
 # ── Training: fit per-cohort distribution and solve Myerson ──────────────────
@@ -390,7 +469,8 @@ def train_optimal_reserves(
 
         try:
             dist = fit_distribution(bids, floor, dist_type)
-            r_star = myerson_optimal_reserve(dist, floor)
+            r_raw = myerson_optimal_reserve(dist, floor)
+            r_star = clip_reserve(r_raw, floor, label=f"[{pg} / {ck}] ")
         except Exception:
             skipped_solve += 1
             continue
