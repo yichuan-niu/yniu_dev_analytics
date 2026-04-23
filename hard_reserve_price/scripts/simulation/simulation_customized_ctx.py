@@ -26,11 +26,22 @@ EVAL_END_DATE       = "2026-04-02"   # evaluation window end (inclusive)
 TRAIN_SAMPLE_PCT    = 1              # auction-level sampling for training (MOD HASH < TRAIN_SAMPLE_PCT)
 EVAL_SAMPLE_PCT     = 100            # campaign-level sampling for eval (100 = no sampling)
 MAX_RANK            = 5              # use auction_rank < MAX_RANK for training bids
-MIN_COHORT_BIDS     = 100000         # min bid rows per cohort to fit a distribution
+MIN_COHORT_BIDS     = 1000           # min bid rows per cohort to fit a distribution
 DIST_TYPE           = "gamma"        # "gamma" or "lognormal"
 LOGNORM_SIGMA_MAX   = 1.2            # max sigma for lognormal (ensures monotone virtual valuation)
 SELLER_VALUE        = 0.0            # Myerson seller valuation (v_0), usually 0
 MAX_RESERVE_INC     = 5.0            # max allowed r* above floor (caps extreme tail fits)
+
+# Category ID → name mapping sourced from CATALOG_SERVICE_PROD.public.PRODUCT_CATEGORY.
+# To refresh: re-query and save with pickle.dump({str(r['id']): r['name'] for r in rows}, open(path, 'wb')).
+L1_CATEGORY_NAMES: dict = pd.read_pickle("../data/l1_category_names.pkl")
+
+
+def _display_cohort_key(pg: str, ck: str) -> str:
+    """Return a human-readable cohort key (resolve category IDs to names)."""
+    if pg == "Category":
+        return L1_CATEGORY_NAMES.get(str(ck), str(ck))
+    return str(ck)
 
 
 # ── Training SQL ──────────────────────────────────────────────────────────────
@@ -98,7 +109,7 @@ SELECT
     COALESCE(acd.l1_category_id::VARCHAR, 'Unknown')                           AS l1_category_id,
     COALESCE(acd.collection_id, 'Unknown')                                     AS collection_id,
     acd.event_hour                                                              AS hour_bucket,
-    acd.event_timestamp                                                         AS auction_timestamp
+    acd.occurred_at                                                              AS auction_timestamp
 FROM edw.ads.ads_auction_candidates_event_delta acd
 WHERE acd.event_date BETWEEN '{eval_start_date}' AND '{eval_end_date}'
   AND acd.CURRENCY_ISO_TYPE IN ('USD')
@@ -478,7 +489,8 @@ def train_optimal_reserves(
 
         optimal_hr[(pg, ck)] = r_star
         pct = i / n_cohorts * 100
-        print(f"  [{pg} / {ck}]  floor=${floor:.2f}  r*=${r_star:.4f}  n={len(bids):,}  ({pct:.0f}%)")
+        ck_label = _display_cohort_key(pg, ck)
+        print(f"  [{pg} / {ck_label}]  floor=${floor:.2f}  r*=${r_star:.4f}  n={len(bids):,}  ({pct:.0f}%)")
 
     print(f"\n  Cohorts solved: {len(optimal_hr)}")
     print(f"  Skipped (too few bids): {skipped_small}")
@@ -719,8 +731,9 @@ def evaluate_all_cohorts(
     n_rows = len(result)
     for i, (_, row) in enumerate(result.iterrows(), 1):
         pct = i / n_rows * 100
+        ck_label = _display_cohort_key(row['placement_group'], row['cohort_key'])
         print(
-            f"  [{row['placement_group']} / {row['cohort_key']}]  "
+            f"  [{row['placement_group']} / {ck_label}]  "
             f"new_hr=${row['new_hr_applied']:.4f}  "
             f"before=${row['ad_fee_before']:.2f}  after=${row['ad_fee_after']:.2f}  "
             f"lift={row['revenue_lift_pct']:+.4f}%  ({pct:.0f}%)"
