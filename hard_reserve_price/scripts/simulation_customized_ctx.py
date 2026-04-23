@@ -24,7 +24,7 @@ EVAL_SAMPLE_PCT     = 50             # campaign-level sampling for eval (MOD HAS
 MAX_RANK            = 5              # use auction_rank < MAX_RANK for training bids
 MIN_COHORT_BIDS     = 100            # min bid rows per cohort to fit a distribution
 DIST_TYPE           = "gamma"        # "gamma" or "lognormal"
-LOGNORM_SIGMA_MAX   = 1.3            # max sigma for lognormal (ensures monotone virtual valuation)
+LOGNORM_SIGMA_MAX   = 1.2            # max sigma for lognormal (ensures monotone virtual valuation)
 SELLER_VALUE        = 0.0            # Myerson seller valuation (v_0), usually 0
 MAX_RESERVE_INC     = 5.0            # max allowed r* above floor (caps extreme tail fits)
 
@@ -87,10 +87,9 @@ SELECT
     acd.event_date,
     acd.auction_rank,
     acd.auction_bid / 100.0                                                     AS auction_bid_dollars,
-    GET(PARSE_JSON(acd.pricing_metadata), 'cpcGsp')::INT / 100.0               AS raw_gsp_dollars,
+    acd.ad_score / 100.0                                                        AS ad_score_dollars,
     GET(PARSE_JSON(acd.pricing_metadata), 'hardReserve')::INT / 100.0          AS hard_reserve_dollars,
-    GET(PARSE_JSON(acd.pricing_metadata), 'softReserveBeta')::FLOAT
-        * GET(PARSE_JSON(acd.pricing_metadata), 'nextBid')::INT / 100.0        AS soft_reserve_dollars,
+    GET(PARSE_JSON(acd.pricing_metadata), 'softReserveBeta')::FLOAT             AS soft_reserve_beta,
     COALESCE(acd.normalized_query, 'Unknown')                                  AS normalized_query,
     COALESCE(acd.l1_category_id::VARCHAR, 'Unknown')                           AS l1_category_id,
     COALESCE(acd.collection_id, 'Unknown')                                     AS collection_id,
@@ -168,11 +167,11 @@ def fetch_eval_data(
         columns = [col[0].lower() for col in cursor.description]
         rows = cursor.fetchall()
     df = pd.DataFrame(rows, columns=columns)
-    for col in ["auction_bid_dollars", "raw_gsp_dollars",
-                "soft_reserve_dollars", "hard_reserve_dollars"]:
+    for col in ["auction_bid_dollars", "ad_score_dollars",
+                "hard_reserve_dollars", "soft_reserve_beta"]:
         df[col] = pd.to_numeric(df[col], errors="coerce")
-    df["soft_reserve_dollars"] = df["soft_reserve_dollars"].fillna(0.0)
-    df["raw_gsp_dollars"] = df["raw_gsp_dollars"].fillna(0.0)
+    df["ad_score_dollars"] = df["ad_score_dollars"].fillna(0.0)
+    df["soft_reserve_beta"] = df["soft_reserve_beta"].fillna(0.0)
     df["event_date"] = pd.to_datetime(df["event_date"], errors="coerce").dt.date.astype(str)
     df["auction_timestamp"] = pd.to_datetime(df["auction_timestamp"], errors="coerce")
     df["hour_bucket"] = pd.to_numeric(df["hour_bucket"], errors="coerce").astype("Int64")
@@ -401,14 +400,83 @@ def train_optimal_reserves(
 
 
 # ── Evaluation: auction resolution and budget-aware replay ────────────────────
+def _compute_winner_cpc(
+    candidates: pd.DataFrame,
+    hr_col: str,
+) -> pd.DataFrame:
+    """
+    Filter auction candidates by bid >= hard reserve, recompute GSP and soft
+    reserve from raw ad_score, and return per-auction winner info.
+
+    For each auction (after filtering):
+      - raw_gsp   = next_ad_score / ad_score * bid
+      - soft_reserve = soft_reserve_beta * next_bid
+      - cpc       = min(bid, max(raw_gsp, soft_reserve, hr))
+      where "next" refers to the next-ranked eligible candidate.
+
+    Parameters
+    ----------
+    candidates : DataFrame with ALL candidates (multiple ranks per auction).
+    hr_col     : column name holding the hard reserve to filter and price by.
+
+    Returns
+    -------
+    One-row-per-auction DataFrame with columns:
+        auction_id, campaign_id, auction_bid_dollars, cpc, auction_rank
+    """
+    df = candidates.sort_values(["auction_id", "auction_rank"]).copy()
+
+    # Filter to eligible candidates
+    eligible = df[df["auction_bid_dollars"] >= df[hr_col]].copy()
+    if eligible.empty:
+        return pd.DataFrame(
+            columns=["auction_id", "campaign_id", "auction_bid_dollars",
+                     "cpc", "auction_rank"]
+        )
+
+    # Next eligible candidate's values within each auction
+    eligible["_next_bid"] = (
+        eligible.groupby("auction_id")["auction_bid_dollars"]
+        .shift(-1).fillna(0.0)
+    )
+    eligible["_next_ad_score"] = (
+        eligible.groupby("auction_id")["ad_score_dollars"]
+        .shift(-1).fillna(0.0)
+    )
+
+    bid = eligible["auction_bid_dollars"].to_numpy(dtype=float)
+    ad_score = eligible["ad_score_dollars"].to_numpy(dtype=float)
+    next_ad_score = eligible["_next_ad_score"].to_numpy(dtype=float)
+    next_bid = eligible["_next_bid"].to_numpy(dtype=float)
+    beta = eligible["soft_reserve_beta"].to_numpy(dtype=float)
+    hr = eligible[hr_col].to_numpy(dtype=float)
+
+    raw_gsp = np.where(ad_score > 0, next_ad_score / ad_score * bid, 0.0)
+    soft_reserve = beta * next_bid
+    comp = np.maximum(raw_gsp, soft_reserve)
+    eligible["cpc"] = np.minimum(bid, np.maximum(comp, hr))
+
+    # Winner = lowest auction_rank (highest priority) per auction
+    winners = eligible.loc[
+        eligible.groupby("auction_id")["auction_rank"].idxmin()
+    ]
+    return winners[["auction_id", "campaign_id", "auction_bid_dollars",
+                    "cpc", "auction_rank"]].copy()
+
+
 def resolve_auction_outcomes(
     eval_all: pd.DataFrame,
     optimal_hr_map: dict,
 ) -> pd.DataFrame:
     """
     For each clicked auction, determine baseline and new-scenario CPC
-    considering runner-up promotion when the rank-0 winner is filtered by
-    the new hard reserve.
+    by recomputing GSP and soft reserve from raw ad_score after filtering
+    candidates by the respective hard reserve.
+
+    Both scenarios use the same formula:
+        final_cpc = min(bid, max(raw_gsp, soft_reserve, hard_reserve))
+    where raw_gsp and soft_reserve are derived from the next eligible
+    candidate's ad_score and bid after filtering.
 
     Parameters
     ----------
@@ -419,7 +487,7 @@ def resolve_auction_outcomes(
     Returns
     -------
     One-row-per-auction DataFrame (the rank-0 row) with added columns:
-        cpc_baseline, cpc_new, new_campaign_id
+        cpc_baseline, cpc_new, new_campaign_id, new_bid
     """
     df = eval_all.copy()
 
@@ -431,77 +499,34 @@ def resolve_auction_outcomes(
         )
     ]
 
-    # ── Baseline: always rank-0 (original winner that was clicked) ────────
+    # ── Baseline: filter by original HR, recompute CPC from ad_score ─────
+    bl_winners = _compute_winner_cpc(df, "hard_reserve_dollars")
+
+    # ── New scenario: filter by Myerson optimal HR, recompute CPC ────────
+    nw_winners = _compute_winner_cpc(df, "new_hr")
+
+    # ── Merge results onto rank-0 rows for context ───────────────────────
     rank0 = df[df["auction_rank"] == 0].copy()
 
-    bid0   = rank0["auction_bid_dollars"].to_numpy(dtype=float)
-    gsp0   = rank0["raw_gsp_dollars"].to_numpy(dtype=float)
-    sr0    = rank0["soft_reserve_dollars"].to_numpy(dtype=float)
-    hr0    = rank0["hard_reserve_dollars"].to_numpy(dtype=float)
-    comp0  = np.maximum(gsp0, sr0)
-
-    rank0["cpc_baseline"] = np.where(
-        bid0 < hr0, 0.0,
-        np.minimum(bid0, np.maximum(comp0, hr0)),
+    # Baseline CPC (winner should be rank-0 under original HR)
+    rank0 = rank0.merge(
+        bl_winners[["auction_id", "cpc"]].rename(columns={"cpc": "cpc_baseline"}),
+        on="auction_id",
+        how="left",
     )
+    rank0["cpc_baseline"] = rank0["cpc_baseline"].fillna(0.0)
 
-    # ── New scenario: rank-0 if it survives, else first eligible runner-up ─
-    new_hr0 = rank0["new_hr"].to_numpy(dtype=float)
-    survives = bid0 >= new_hr0
-
-    rank0["cpc_new"] = np.where(
-        survives,
-        np.minimum(bid0, np.maximum(comp0, new_hr0)),
-        np.nan,                          # placeholder — needs runner-up
+    # New scenario CPC, winner campaign, and winner bid
+    rank0 = rank0.merge(
+        nw_winners[["auction_id", "cpc", "campaign_id", "auction_bid_dollars"]]
+        .rename(columns={
+            "cpc": "cpc_new",
+            "campaign_id": "new_campaign_id",
+            "auction_bid_dollars": "new_bid",
+        }),
+        on="auction_id",
+        how="left",
     )
-    rank0["new_campaign_id"] = np.where(
-        survives, rank0["campaign_id"], None
-    )
-    rank0["new_bid"] = np.where(survives, bid0, np.nan)
-
-    # ── Runner-up promotion for auctions where rank-0 is filtered ─────────
-    needs_promo = rank0.loc[rank0["cpc_new"].isna(), "auction_id"]
-
-    if len(needs_promo) > 0:
-        runners = df[
-            df["auction_id"].isin(needs_promo)
-            & (df["auction_rank"] > 0)
-            & (df["auction_bid_dollars"] >= df["new_hr"])
-        ]
-
-        if not runners.empty:
-            # Best runner-up = lowest rank among eligible candidates
-            best = runners.loc[
-                runners.groupby("auction_id")["auction_rank"].idxmin()
-            ].copy()
-
-            bid_r  = best["auction_bid_dollars"].to_numpy(dtype=float)
-            gsp_r  = best["raw_gsp_dollars"].to_numpy(dtype=float)
-            sr_r   = best["soft_reserve_dollars"].to_numpy(dtype=float)
-            nhr_r  = best["new_hr"].to_numpy(dtype=float)
-            comp_r = np.maximum(gsp_r, sr_r)
-
-            best["_promo_cpc"] = np.minimum(
-                bid_r, np.maximum(comp_r, nhr_r)
-            )
-
-            promo = (
-                best[["auction_id", "_promo_cpc", "campaign_id", "auction_bid_dollars"]]
-                .rename(columns={"campaign_id": "_promo_cid",
-                                 "auction_bid_dollars": "_promo_bid"})
-                .set_index("auction_id")
-            )
-            rank0 = rank0.merge(
-                promo, left_on="auction_id", right_index=True, how="left"
-            )
-
-            mask = rank0["cpc_new"].isna()
-            rank0.loc[mask, "cpc_new"] = rank0.loc[mask, "_promo_cpc"]
-            rank0.loc[mask, "new_campaign_id"] = rank0.loc[mask, "_promo_cid"]
-            rank0.loc[mask, "new_bid"] = rank0.loc[mask, "_promo_bid"]
-            rank0 = rank0.drop(columns=["_promo_cpc", "_promo_cid", "_promo_bid"])
-
-    # Auctions where no candidate is eligible → 0 revenue
     rank0["cpc_new"] = rank0["cpc_new"].fillna(0.0)
     rank0["new_bid"] = rank0["new_bid"].fillna(0.0)
     rank0["new_campaign_id"] = rank0["new_campaign_id"].fillna(
