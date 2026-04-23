@@ -930,7 +930,11 @@ cohort_mr = (
     )
     .reset_index()
 )
-cohort_mr["mr_before"] = cohort_mr["cpc_sum"]     / cohort_mr["bid_sum"]
+cohort_mr["mr_before"] = np.where(
+    cohort_mr["bid_sum"] > 0,
+    cohort_mr["cpc_sum"] / cohort_mr["bid_sum"],
+    0.0,
+)
 cohort_mr["mr_after"]  = np.where(
     cohort_mr["new_bid_sum"] > 0,
     cohort_mr["new_cpc_sum"] / cohort_mr["new_bid_sum"],
