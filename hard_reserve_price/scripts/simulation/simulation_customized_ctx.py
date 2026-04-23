@@ -472,7 +472,8 @@ def train_optimal_reserves(
         allowed = set()
         for pg in PLACEMENT_GROUP_ORDER:
             pg_cohorts = sorted(
-                [(ck, cnt) for (g, ck), cnt in bid_counts.items() if g == pg],
+                [(ck, cnt) for (g, ck), cnt in bid_counts.items()
+                 if g == pg and cnt >= min_cohort_bids],
                 key=lambda x: x[1], reverse=True,
             )
             allowed.update((pg, ck) for ck, _ in pg_cohorts[:top_n_cohorts])
