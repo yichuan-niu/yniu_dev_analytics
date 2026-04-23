@@ -824,9 +824,9 @@ print(f"Training window: {TRAIN_START_DATE} – {TRAIN_END_DATE}")
 print(f"Distribution: {DIST_TYPE}  |  MIN_COHORT_BIDS={MIN_COHORT_BIDS}  |  MAX_RANK={MAX_RANK}")
 
 train_df = fetch_train_data()
-train_df.to_pickle(f"data/simulation_ctx_train_{TRAIN_START_DATE}_to_{TRAIN_END_DATE}_smpl_{TRAIN_SAMPLE_PCT}_df.pkl")
+train_df.to_pickle(f"../data/simulation_ctx_train_{TRAIN_START_DATE}_to_{TRAIN_END_DATE}_smpl_{TRAIN_SAMPLE_PCT}_df.pkl")
 
-# train_df = pd.read_pickle("data/simulation_ctx_train_df.pkl")
+# train_df = pd.read_pickle("../data/simulation_ctx_train_df.pkl")
 
 print(f"  Training rows: {len(train_df):,}")
 
@@ -849,9 +849,9 @@ for pg in PLACEMENT_GROUP_ORDER:
 print(f"\nFetching evaluation data ({EVAL_START_DATE} – {EVAL_END_DATE})...")
 
 eval_all = fetch_eval_data()
-eval_all.to_pickle(f"data/simulation_ctx_eval_{EVAL_START_DATE}_to_{EVAL_END_DATE}_smpl_{EVAL_SAMPLE_PCT}_df.pkl")
+eval_all.to_pickle(f"../data/simulation_ctx_eval_{EVAL_START_DATE}_to_{EVAL_END_DATE}_smpl_{EVAL_SAMPLE_PCT}_df.pkl")
 
-# eval_all = pd.read_pickle("data/simulation_ctx_eval_df.pkl")
+# eval_all = pd.read_pickle("../data/simulation_ctx_eval_df.pkl")
 
 print(f"  Eval candidate rows: {len(eval_all):,}")
 print(f"  Unique auctions:     {eval_all['auction_id'].nunique():,}")
@@ -860,9 +860,9 @@ print(f"  Unique auctions:     {eval_all['auction_id'].nunique():,}")
 print(f"\nFetching campaign daily budgets ({EVAL_START_DATE} – {EVAL_END_DATE})...")
 
 budget_df = fetch_budget()
-budget_df.to_pickle(f"data/simulation_ctx_budget_{EVAL_START_DATE}_to_{EVAL_END_DATE}_df.pkl")
+budget_df.to_pickle(f"../data/simulation_ctx_budget_{EVAL_START_DATE}_to_{EVAL_END_DATE}_df.pkl")
 
-# budget_df = pd.read_pickle(f"data/simulation_ctx_budget_{EVAL_START_DATE}_to_{EVAL_END_DATE}_df.pkl")
+# budget_df = pd.read_pickle(f"../data/simulation_ctx_budget_{EVAL_START_DATE}_to_{EVAL_END_DATE}_df.pkl")
 
 budget_maps = {
     dt: grp.set_index("campaign_id")["campaign_daily_budget_dollars"].to_dict()
@@ -874,9 +874,9 @@ print(f"  Campaigns with budget (total): {budget_df['campaign_id'].nunique():,}"
 print(f"\nFetching per-auction attributed sales ({EVAL_START_DATE} – {EVAL_END_DATE})...")
 
 sales_df = fetch_sales()
-sales_df.to_pickle(f"data/simulation_ctx_sales_{EVAL_START_DATE}_to_{EVAL_END_DATE}_df.pkl")
+sales_df.to_pickle(f"../data/simulation_ctx_sales_{EVAL_START_DATE}_to_{EVAL_END_DATE}_df.pkl")
 
-# sales_df = pd.read_pickle(f"data/simulation_ctx_sales_{EVAL_START_DATE}_to_{EVAL_END_DATE}_df.pkl")
+# sales_df = pd.read_pickle(f"../data/simulation_ctx_sales_{EVAL_START_DATE}_to_{EVAL_END_DATE}_df.pkl")
 
 print(f"  Auctions with sales: {len(sales_df):,}")
 
