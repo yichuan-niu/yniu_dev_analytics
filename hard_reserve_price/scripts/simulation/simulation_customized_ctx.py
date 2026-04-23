@@ -449,7 +449,10 @@ def train_optimal_reserves(
         .reset_index(name="n_total")
     )
 
-    for _, cohort in cohorts.iterrows():
+    n_cohorts = len(cohorts)
+    for i, (_, cohort) in enumerate(cohorts.iterrows(), 1):
+        pct = i / n_cohorts * 100
+        print(f"\r  Training: {i}/{n_cohorts} ({pct:.0f}%)", end="", flush=True)
         pg = cohort["placement_group"]
         ck = cohort["cohort_key"]
         floor = FLOOR_PRICES[pg]
@@ -480,9 +483,9 @@ def train_optimal_reserves(
             continue
 
         optimal_hr[(pg, ck)] = r_star
-        print(f"  [{pg} / {ck}]  floor=${floor:.2f}  r*=${r_star:.4f}  n={len(bids):,}")
+        print(f"\n  [{pg} / {ck}]  floor=${floor:.2f}  r*=${r_star:.4f}  n={len(bids):,}")
 
-    print(f"\n  Cohorts solved: {len(optimal_hr)}")
+    print(f"\n\n  Cohorts solved: {len(optimal_hr)}")
     print(f"  Skipped (too few bids): {skipped_small}")
     print(f"  Skipped (no root / fit error): {skipped_solve}")
     return optimal_hr
@@ -718,9 +721,12 @@ def evaluate_all_cohorts(
     agg["avg_cpc_after"] = agg["ad_fee_after"] / agg["n_rows"]
 
     result = agg.sort_values("revenue_lift_pct", ascending=False).reset_index(drop=True)
-    for _, row in result.iterrows():
+    n_rows = len(result)
+    for i, (_, row) in enumerate(result.iterrows(), 1):
+        pct = i / n_rows * 100
+        print(f"\r  Evaluating: {i}/{n_rows} ({pct:.0f}%)", end="", flush=True)
         print(
-            f"  [{row['placement_group']} / {row['cohort_key']}]  "
+            f"\n  [{row['placement_group']} / {row['cohort_key']}]  "
             f"new_hr=${row['new_hr_applied']:.4f}  "
             f"before=${row['ad_fee_before']:.2f}  after=${row['ad_fee_after']:.2f}  "
             f"lift={row['revenue_lift_pct']:+.4f}%"
