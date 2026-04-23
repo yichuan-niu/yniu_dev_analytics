@@ -26,7 +26,7 @@ EVAL_END_DATE       = "2026-04-02"   # evaluation window end (inclusive)
 TRAIN_SAMPLE_PCT    = 1              # auction-level sampling for training (MOD HASH < TRAIN_SAMPLE_PCT)
 EVAL_SAMPLE_PCT     = 100            # campaign-level sampling for eval (100 = no sampling)
 MAX_RANK            = 5              # use auction_rank < MAX_RANK for training bids
-MIN_COHORT_BIDS     = 10000          # min bid rows per cohort to fit a distribution
+MIN_COHORT_BIDS     = 100000         # min bid rows per cohort to fit a distribution
 DIST_TYPE           = "gamma"        # "gamma" or "lognormal"
 LOGNORM_SIGMA_MAX   = 1.2            # max sigma for lognormal (ensures monotone virtual valuation)
 SELLER_VALUE        = 0.0            # Myerson seller valuation (v_0), usually 0
@@ -443,22 +443,14 @@ def train_optimal_reserves(
     optimal_hr: dict = {}
     skipped_small = skipped_solve = 0
 
-    cohorts = (
-        df.groupby(["placement_group", "cohort_key"])
-        .size()
-        .reset_index(name="n_total")
+    grouped = df.dropna(subset=["auction_bid_dollars", "hard_reserve_dollars"]).groupby(
+        ["placement_group", "cohort_key"]
     )
 
-    n_cohorts = len(cohorts)
-    for i, (_, cohort) in enumerate(cohorts.iterrows(), 1):
-        pct = i / n_cohorts * 100
-        print(f"\r  Training: {i}/{n_cohorts} ({pct:.0f}%)", end="", flush=True)
-        pg = cohort["placement_group"]
-        ck = cohort["cohort_key"]
+    n_cohorts = len(grouped)
+    print(f"  Total cohorts: {n_cohorts}")
+    for i, ((pg, ck), cohort_rows) in enumerate(grouped, 1):
         floor = FLOOR_PRICES[pg]
-
-        mask = (df["placement_group"] == pg) & (df["cohort_key"] == ck)
-        cohort_rows = df.loc[mask].dropna(subset=["auction_bid_dollars", "hard_reserve_dollars"])
         # Use per-row hard reserve for filtering (handles non-standard HR
         # from experiments or DV overrides within the training window)
         bids = cohort_rows.loc[
@@ -468,6 +460,8 @@ def train_optimal_reserves(
 
         if len(bids) < min_cohort_bids:
             skipped_small += 1
+            pct = i / n_cohorts * 100
+            # print(f"  [{pg} / {ck}]  skipped (n={len(bids):,} < {min_cohort_bids:,})  ({pct:.0f}%)")
             continue
 
         try:
@@ -483,9 +477,10 @@ def train_optimal_reserves(
             continue
 
         optimal_hr[(pg, ck)] = r_star
-        print(f"\n  [{pg} / {ck}]  floor=${floor:.2f}  r*=${r_star:.4f}  n={len(bids):,}")
+        pct = i / n_cohorts * 100
+        print(f"  [{pg} / {ck}]  floor=${floor:.2f}  r*=${r_star:.4f}  n={len(bids):,}  ({pct:.0f}%)")
 
-    print(f"\n\n  Cohorts solved: {len(optimal_hr)}")
+    print(f"\n  Cohorts solved: {len(optimal_hr)}")
     print(f"  Skipped (too few bids): {skipped_small}")
     print(f"  Skipped (no root / fit error): {skipped_solve}")
     return optimal_hr
@@ -724,12 +719,11 @@ def evaluate_all_cohorts(
     n_rows = len(result)
     for i, (_, row) in enumerate(result.iterrows(), 1):
         pct = i / n_rows * 100
-        print(f"\r  Evaluating: {i}/{n_rows} ({pct:.0f}%)", end="", flush=True)
         print(
-            f"\n  [{row['placement_group']} / {row['cohort_key']}]  "
+            f"  [{row['placement_group']} / {row['cohort_key']}]  "
             f"new_hr=${row['new_hr_applied']:.4f}  "
             f"before=${row['ad_fee_before']:.2f}  after=${row['ad_fee_after']:.2f}  "
-            f"lift={row['revenue_lift_pct']:+.4f}%"
+            f"lift={row['revenue_lift_pct']:+.4f}%  ({pct:.0f}%)"
         )
 
     return result
