@@ -15,10 +15,10 @@ from simulation_customized_ctx_config import (
 plt.close("all")
 
 # ── Constants ─────────────────────────────────────────────────────────────────
-TRAIN_START_DATE    = "2026-03-25"   # training window start (inclusive)
+TRAIN_START_DATE    = "2026-03-31"   # training window start (inclusive)
 TRAIN_END_DATE      = "2026-03-31"   # training window end (inclusive)
 EVAL_START_DATE     = "2026-04-01"   # evaluation window start (inclusive)
-EVAL_END_DATE       = "2026-04-03"   # evaluation window end (inclusive)
+EVAL_END_DATE       = "2026-04-02"   # evaluation window end (inclusive)
 TRAIN_SAMPLE_PCT    = 5              # auction-level sampling for training (MOD HASH < TRAIN_SAMPLE_PCT)
 EVAL_SAMPLE_PCT     = 100            # campaign-level sampling for eval (100 = no sampling)
 MAX_RANK            = 5              # use auction_rank < MAX_RANK for training bids
@@ -852,7 +852,6 @@ eval_all.to_pickle(f"data/simulation_ctx_eval_{EVAL_START_DATE}_to_{EVAL_END_DAT
 
 print(f"  Eval candidate rows: {len(eval_all):,}")
 print(f"  Unique auctions:     {eval_all['auction_id'].nunique():,}")
-print(f"  Eval total CPC ($):  (derived from formula after resolve_auction_outcomes)")
 
 #%% Fetch budget and ROAS data
 print(f"\nFetching campaign daily budgets ({EVAL_START_DATE} – {EVAL_END_DATE})...")
