@@ -110,6 +110,7 @@ SELECT
     COALESCE(MAX(campaign_budget), SUM(daily_budget)) / 100 AS campaign_daily_budget_dollars
 FROM PRODDB.PUBLIC.FACT_ADS_DAILY_BUDGET
 WHERE date_est BETWEEN '{start_date}' AND '{end_date}'
+  AND CURRENCY = 'USD'
 GROUP BY date_est, campaign_id
 """
 
@@ -850,7 +851,6 @@ eval_all.to_pickle(f"data/simulation_ctx_eval_{EVAL_START_DATE}_to_{EVAL_END_DAT
 
 print(f"  Eval candidate rows: {len(eval_all):,}")
 print(f"  Unique auctions:     {eval_all['auction_id'].nunique():,}")
-rank0_only = eval_all[eval_all["auction_rank"] == 0]
 print(f"  Eval total CPC ($):  (derived from formula after resolve_auction_outcomes)")
 
 #%% Fetch budget and ROAS data
