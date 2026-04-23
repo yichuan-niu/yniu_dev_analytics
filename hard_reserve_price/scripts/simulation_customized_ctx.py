@@ -53,10 +53,10 @@ WHERE acd.event_date BETWEEN '{train_start_date}' AND '{train_end_date}'
 """
 
 # ── Evaluation SQL ────────────────────────────────────────────────────────────
-# All candidates (rank < max_rank) for clicked auctions over the eval date
-# range.  Auction selection uses campaign-level sampling on the rank-0 winner,
-# but once an auction is selected ALL its candidates are included (regardless
-# of their campaign hash) so that runner-up promotion works correctly.
+# All candidates (rank < max_rank) for clicked SP USD auctions over the eval
+# date range.  The rank-0 winner must have pricing_metadata for baseline CPC.
+# All other candidates are included (even without pricing_metadata) so that
+# runner-up promotion and GSP computation work correctly.
 EVAL_QUERY = """
 WITH clicked AS (
     SELECT
@@ -235,7 +235,8 @@ def _gamma_nll(params, bids: np.ndarray, floor: float) -> float:
 def fit_gamma_truncated(bids: np.ndarray, floor: float):
     """Fit a Gamma distribution to bids truncated from below at floor via L-BFGS-B."""
     m = bids.mean()
-    v = bids.var() if bids.var() > 0 else m
+    v = bids.var()
+    v = v if v > 0 else m
     theta0 = v / m
     alpha0 = m / theta0
     result = minimize(
@@ -908,12 +909,18 @@ for pg in PLACEMENT_GROUP_ORDER:
         )
 
 total_lift_dollars = (summary["ad_fee_after"] - summary["ad_fee_before"]).sum()
-total_cpc = summary["ad_fee_before"].sum()
-overall_lift_pct = total_lift_dollars / total_cpc * 100 if total_cpc > 0 else 0.0
+changed_cpc = summary["ad_fee_before"].sum()
+total_sp_cpc = eval_df["capped_baseline"].sum()
+lift_pct_changed = total_lift_dollars / changed_cpc * 100 if changed_cpc > 0 else 0.0
+lift_pct_total = total_lift_dollars / total_sp_cpc * 100 if total_sp_cpc > 0 else 0.0
 print(f"\n{'─' * 97}")
 print(
-    f"Overall revenue lift (Myerson optimal HR per cohort): {overall_lift_pct:.4f}%"
-    f"  (${total_lift_dollars:,.2f} lift on ${total_cpc:,.2f} total CPC)"
+    f"Lift on changed cohorts: {lift_pct_changed:.4f}%"
+    f"  (${total_lift_dollars:,.2f} on ${changed_cpc:,.2f} CPC)"
+)
+print(
+    f"Lift on total SP USD:    {lift_pct_total:.4f}%"
+    f"  (${total_lift_dollars:,.2f} on ${total_sp_cpc:,.2f} CPC)"
 )
 
 #%% Plots
