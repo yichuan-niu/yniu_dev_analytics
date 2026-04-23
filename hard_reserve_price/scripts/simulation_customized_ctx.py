@@ -20,7 +20,7 @@ TRAIN_END_DATE      = "2026-03-31"   # training window end (inclusive)
 EVAL_START_DATE     = "2026-04-01"   # evaluation window start (inclusive)
 EVAL_END_DATE       = "2026-04-03"   # evaluation window end (inclusive)
 TRAIN_SAMPLE_PCT    = 5              # auction-level sampling for training (MOD HASH < TRAIN_SAMPLE_PCT)
-EVAL_SAMPLE_PCT     = 50             # campaign-level sampling for eval (MOD HASH < SAMPLE_PCT)
+EVAL_SAMPLE_PCT     = 100            # campaign-level sampling for eval (100 = no sampling)
 MAX_RANK            = 5              # use auction_rank < MAX_RANK for training bids
 MIN_COHORT_BIDS     = 100            # min bid rows per cohort to fit a distribution
 DIST_TYPE           = "gamma"        # "gamma" or "lognormal"
@@ -372,8 +372,13 @@ def train_optimal_reserves(
         floor = FLOOR_PRICES[pg]
 
         mask = (df["placement_group"] == pg) & (df["cohort_key"] == ck)
-        bids = df.loc[mask, "auction_bid_dollars"].dropna().to_numpy(dtype=float)
-        bids = bids[bids > floor]  # drop floor-clamped values
+        cohort_rows = df.loc[mask].dropna(subset=["auction_bid_dollars", "hard_reserve_dollars"])
+        # Use per-row hard reserve for filtering (handles non-standard HR
+        # from experiments or DV overrides within the training window)
+        bids = cohort_rows.loc[
+            cohort_rows["auction_bid_dollars"] > cohort_rows["hard_reserve_dollars"],
+            "auction_bid_dollars",
+        ].to_numpy(dtype=float)
 
         if len(bids) < min_cohort_bids:
             skipped_small += 1
