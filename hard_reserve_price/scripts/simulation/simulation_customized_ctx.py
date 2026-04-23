@@ -22,10 +22,10 @@ TRAIN_START_DATE    = "2026-03-31"   # training window start (inclusive)
 TRAIN_END_DATE      = "2026-03-31"   # training window end (inclusive)
 EVAL_START_DATE     = "2026-04-01"   # evaluation window start (inclusive)
 EVAL_END_DATE       = "2026-04-02"   # evaluation window end (inclusive)
-TRAIN_SAMPLE_PCT    = 5              # auction-level sampling for training (MOD HASH < TRAIN_SAMPLE_PCT)
+TRAIN_SAMPLE_PCT    = 1              # auction-level sampling for training (MOD HASH < TRAIN_SAMPLE_PCT)
 EVAL_SAMPLE_PCT     = 100            # campaign-level sampling for eval (100 = no sampling)
 MAX_RANK            = 5              # use auction_rank < MAX_RANK for training bids
-MIN_COHORT_BIDS     = 100            # min bid rows per cohort to fit a distribution
+MIN_COHORT_BIDS     = 1000           # min bid rows per cohort to fit a distribution
 DIST_TYPE           = "gamma"        # "gamma" or "lognormal"
 LOGNORM_SIGMA_MAX   = 1.2            # max sigma for lognormal (ensures monotone virtual valuation)
 SELLER_VALUE        = 0.0            # Myerson seller valuation (v_0), usually 0
@@ -823,10 +823,10 @@ def plot_optimal_reserves(optimal_hr_map: dict) -> None:
 print(f"Training window: {TRAIN_START_DATE} – {TRAIN_END_DATE}")
 print(f"Distribution: {DIST_TYPE}  |  MIN_COHORT_BIDS={MIN_COHORT_BIDS}  |  MAX_RANK={MAX_RANK}")
 
-train_df = fetch_train_data()
-train_df.to_pickle(f"../data/simulation_ctx_train_{TRAIN_START_DATE}_to_{TRAIN_END_DATE}_smpl_{TRAIN_SAMPLE_PCT}_df.pkl")
+# train_df = fetch_train_data()
+# train_df.to_pickle(f"../data/simulation_ctx_train_{TRAIN_START_DATE}_to_{TRAIN_END_DATE}_smpl_{TRAIN_SAMPLE_PCT}_df.pkl")
 
-# train_df = pd.read_pickle("../data/simulation_ctx_train_df.pkl")
+train_df = pd.read_pickle(f"../data/simulation_ctx_train_{TRAIN_START_DATE}_to_{TRAIN_END_DATE}_smpl_{TRAIN_SAMPLE_PCT}_df.pkl")
 
 print(f"  Training rows: {len(train_df):,}")
 
@@ -851,7 +851,7 @@ print(f"\nFetching evaluation data ({EVAL_START_DATE} – {EVAL_END_DATE})...")
 eval_all = fetch_eval_data()
 eval_all.to_pickle(f"../data/simulation_ctx_eval_{EVAL_START_DATE}_to_{EVAL_END_DATE}_smpl_{EVAL_SAMPLE_PCT}_df.pkl")
 
-# eval_all = pd.read_pickle("../data/simulation_ctx_eval_df.pkl")
+# eval_all = pd.read_pickle(f"../data/simulation_ctx_eval_{EVAL_START_DATE}_to_{EVAL_END_DATE}_smpl_{EVAL_SAMPLE_PCT}_df.pkl")
 
 print(f"  Eval candidate rows: {len(eval_all):,}")
 print(f"  Unique auctions:     {eval_all['auction_id'].nunique():,}")
