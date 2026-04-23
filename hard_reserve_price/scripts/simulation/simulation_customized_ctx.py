@@ -85,38 +85,42 @@ WITH clicked AS (
       AND campaign_id IS NOT NULL
     GROUP BY ad_auction_id
 ),
-sampled_clicked_auctions AS (
-    SELECT acd.auction_id
+base AS (
+    SELECT
+        acd.auction_id,
+        acd.campaign_id,
+        acd.placement,
+        acd.event_date,
+        acd.auction_rank,
+        acd.auction_bid / 100.0                                                          AS auction_bid_dollars,
+        acd.ad_score / 100.0                                                             AS ad_score_dollars,
+        COALESCE(GET(PARSE_JSON(acd.pricing_metadata), 'hardReserve')::INT, 0) / 100.0   AS hard_reserve_dollars,
+        COALESCE(GET(PARSE_JSON(acd.pricing_metadata), 'softReserveBeta')::FLOAT, 0)     AS soft_reserve_beta,
+        COALESCE(acd.normalized_query, 'Unknown')                                        AS normalized_query,
+        COALESCE(acd.l1_category_id::VARCHAR, 'Unknown')                                 AS l1_category_id,
+        COALESCE(acd.collection_id, 'Unknown')                                           AS collection_id,
+        acd.event_hour                                                                    AS hour_bucket,
+        acd.occurred_at                                                                   AS auction_timestamp,
+        MAX(CASE
+            WHEN acd.auction_rank = 0
+             AND acd.pricing_metadata IS NOT NULL
+             AND MOD(ABS(HASH(acd.campaign_id)), 100) < {eval_sample_pct}
+            THEN 1 ELSE 0
+        END) OVER (PARTITION BY acd.auction_id)                                           AS _qualifies
     FROM edw.ads.ads_auction_candidates_event_delta acd
     INNER JOIN clicked ON acd.auction_id = clicked.ad_auction_id
     WHERE acd.event_date BETWEEN '{eval_start_date}' AND '{eval_end_date}'
       AND acd.CURRENCY_ISO_TYPE IN ('USD')
       AND acd.placement LIKE '%SPONSORED_PRODUCTS%'
-      AND acd.auction_rank = 0
-      AND acd.pricing_metadata IS NOT NULL
-      AND MOD(ABS(HASH(acd.campaign_id)), 100) < {eval_sample_pct}
+      AND acd.auction_rank < {max_rank}
 )
 SELECT
-    acd.auction_id,
-    acd.campaign_id,
-    acd.placement,
-    acd.event_date,
-    acd.auction_rank,
-    acd.auction_bid / 100.0                                                     AS auction_bid_dollars,
-    acd.ad_score / 100.0                                                        AS ad_score_dollars,
-    COALESCE(GET(PARSE_JSON(acd.pricing_metadata), 'hardReserve')::INT, 0) / 100.0   AS hard_reserve_dollars,
-    COALESCE(GET(PARSE_JSON(acd.pricing_metadata), 'softReserveBeta')::FLOAT, 0)    AS soft_reserve_beta,
-    COALESCE(acd.normalized_query, 'Unknown')                                  AS normalized_query,
-    COALESCE(acd.l1_category_id::VARCHAR, 'Unknown')                           AS l1_category_id,
-    COALESCE(acd.collection_id, 'Unknown')                                     AS collection_id,
-    acd.event_hour                                                              AS hour_bucket,
-    acd.occurred_at                                                              AS auction_timestamp
-FROM edw.ads.ads_auction_candidates_event_delta acd
-WHERE acd.event_date BETWEEN '{eval_start_date}' AND '{eval_end_date}'
-  AND acd.CURRENCY_ISO_TYPE IN ('USD')
-  AND acd.placement LIKE '%SPONSORED_PRODUCTS%'
-  AND acd.auction_rank < {max_rank}
-  AND acd.auction_id IN (SELECT auction_id FROM sampled_clicked_auctions)
+    auction_id, campaign_id, placement, event_date, auction_rank,
+    auction_bid_dollars, ad_score_dollars, hard_reserve_dollars,
+    soft_reserve_beta, normalized_query, l1_category_id, collection_id,
+    hour_bucket, auction_timestamp
+FROM base
+WHERE _qualifies = 1
 """
 
 BUDGET_QUERY = """
