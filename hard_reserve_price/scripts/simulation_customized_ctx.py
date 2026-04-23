@@ -24,6 +24,7 @@ EVAL_SAMPLE_PCT     = 50             # campaign-level sampling for eval (MOD HAS
 MAX_RANK            = 5              # use auction_rank < MAX_RANK for training bids
 MIN_COHORT_BIDS     = 100            # min bid rows per cohort to fit a distribution
 DIST_TYPE           = "gamma"        # "gamma" or "lognormal"
+LOGNORM_SIGMA_MAX   = 1.3            # max sigma for lognormal (ensures monotone virtual valuation)
 SELLER_VALUE        = 0.0            # Myerson seller valuation (v_0), usually 0
 MAX_RESERVE_INC     = 5.0            # max allowed r* above floor (caps extreme tail fits)
 
@@ -261,15 +262,21 @@ def _lognorm_nll(params, bids: np.ndarray, floor: float) -> float:
     return -(np.sum(d.logpdf(bids)) - len(bids) * np.log(surv))
 
 
-def fit_lognormal_truncated(bids: np.ndarray, floor: float):
-    """Fit a Lognormal distribution to bids truncated from below at floor via L-BFGS-B."""
+def fit_lognormal_truncated(
+    bids: np.ndarray, floor: float, sigma_max: float = LOGNORM_SIGMA_MAX,
+):
+    """Fit a Lognormal distribution to bids truncated from below at floor via L-BFGS-B.
+
+    sigma is bounded by sigma_max to ensure the virtual valuation stays monotone
+    (required for a unique Myerson optimal reserve).
+    """
     log_bids = np.log(bids)
     result = minimize(
         _lognorm_nll,
-        x0=[log_bids.mean(), log_bids.std() if log_bids.std() > 0 else 0.5],
+        x0=[log_bids.mean(), min(log_bids.std() if log_bids.std() > 0 else 0.5, sigma_max)],
         args=(bids, floor),
         method="L-BFGS-B",
-        bounds=[(None, None), (1e-6, None)],
+        bounds=[(None, None), (1e-6, sigma_max)],
     )
     if not result.success:
         raise RuntimeError(f"Lognormal MLE failed to converge: {result.message}")
