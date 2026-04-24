@@ -1,7 +1,28 @@
 """Shared constants and helpers for hard reserve price analysis scripts."""
 
 import os
+import pandas as pd
 import snowflake.connector
+
+
+# ── Constants ─────────────────────────────────────────────────────────────────
+TRAIN_START_DATE    = "2026-03-31"   # training window start (inclusive)
+TRAIN_END_DATE      = "2026-03-31"   # training window end (inclusive)
+EVAL_START_DATE     = "2026-04-01"   # evaluation window start (inclusive)
+EVAL_END_DATE       = "2026-04-02"   # evaluation window end (inclusive)
+TRAIN_SAMPLE_PCT    = 1              # auction-level sampling for training (MOD HASH < TRAIN_SAMPLE_PCT)
+EVAL_SAMPLE_PCT     = 100            # campaign-level sampling for eval (100 = no sampling)
+MAX_RANK            = 5              # use auction_rank < MAX_RANK for training bids
+MIN_COHORT_BIDS     = 100000           # min bid rows per cohort to fit a distribution
+TOP_N_COHORTS       = 1000           # per placement group: keep only top-N cohorts by bid count (None = no limit)
+DIST_TYPE           = "gamma"        # "gamma" or "lognormal"
+LOGNORM_SIGMA_MAX   = 1.2            # max sigma for lognormal (ensures monotone virtual valuation)
+SELLER_VALUE        = 0.0            # Myerson seller valuation (v_0), usually 0
+MAX_RESERVE_INC     = 5.0            # max allowed r* above floor (caps extreme tail fits)
+
+# Category ID → name mapping sourced from CATALOG_SERVICE_PROD.public.PRODUCT_CATEGORY.
+# To refresh: re-query and save with pickle.dump({str(r['id']): r['name'] for r in rows}, open(path, 'wb')).
+L1_CATEGORY_NAMES: dict = pd.read_pickle("../data/l1_category_names.pkl")
 
 
 # ── Placement groups ─────────────────────────────────────────────────────────
