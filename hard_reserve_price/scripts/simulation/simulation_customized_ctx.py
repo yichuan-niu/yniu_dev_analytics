@@ -254,6 +254,19 @@ eval_df = eval_df.merge(sales_df, on="auction_id", how="left")
 
 _apply_budget_caps(eval_df, budget_maps)
 
+# Remove budget-spillover artifacts: unchanged cohorts must have zero lift.
+# Without this, higher CPC in the changed cohort depletes shared campaign
+# budgets faster, artificially reducing capped_new for unchanged cohorts.
+_changed = set(optimal_hr_map.keys())
+_unchanged_mask = ~pd.Series(
+    [(pg, ck) in _changed
+     for pg, ck in zip(eval_df["placement_group"], eval_df["cohort_key"])],
+    index=eval_df.index,
+)
+eval_df.loc[_unchanged_mask, "capped_new"] = eval_df.loc[
+    _unchanged_mask, "capped_baseline"
+]
+
 summary = evaluate_all_cohorts(eval_df, optimal_hr_map)
 
 # Total revenue summary (all campaigns, eval dates)
