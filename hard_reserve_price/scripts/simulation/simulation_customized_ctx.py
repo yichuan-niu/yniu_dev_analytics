@@ -17,7 +17,11 @@ from simulation_customized_ctx_config import (
     EVAL_SAMPLE_PCT,
     MAX_RANK,
     MIN_COHORT_BIDS,
+    TOP_N_COHORTS,
     DIST_TYPE,
+    LOGNORM_SIGMA_MAX,
+    SELLER_VALUE,
+    MAX_RESERVE_INC,
 )
 
 from simulation_customized_ctx_lib import (
@@ -156,8 +160,6 @@ def plot_optimal_reserves(optimal_hr_map: dict) -> None:
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 #%% Training: fetch auction candidates from clicked auctions over training window
-print(f"Training window: {TRAIN_START_DATE} – {TRAIN_END_DATE}")
-print(f"Distribution: {DIST_TYPE}  |  MIN_COHORT_BIDS={MIN_COHORT_BIDS}  |  MAX_RANK={MAX_RANK}")
 
 # train_df = fetch_train_data()
 # train_df.to_pickle(f"../data/simulation_ctx_train_{TRAIN_START_DATE}_to_{TRAIN_END_DATE}_smpl_{TRAIN_SAMPLE_PCT}_df.pkl")
@@ -202,6 +204,24 @@ sales_df = pd.read_pickle(f"../data/simulation_ctx_sales_{EVAL_START_DATE}_to_{E
 print(f"  Auctions with sales: {len(sales_df):,}")
 
 #%% Fit distributions and solve Myerson's equation per cohort
+print(f"\n{'─' * 60}")
+print("Simulation Parameters")
+print(f"{'─' * 60}")
+print(f"  TRAIN_START_DATE  = {TRAIN_START_DATE}")
+print(f"  TRAIN_END_DATE    = {TRAIN_END_DATE}")
+print(f"  EVAL_START_DATE   = {EVAL_START_DATE}")
+print(f"  EVAL_END_DATE     = {EVAL_END_DATE}")
+print(f"  TRAIN_SAMPLE_PCT  = {TRAIN_SAMPLE_PCT}")
+print(f"  EVAL_SAMPLE_PCT   = {EVAL_SAMPLE_PCT}")
+print(f"  MAX_RANK          = {MAX_RANK}")
+print(f"  MIN_COHORT_BIDS   = {MIN_COHORT_BIDS:,}")
+print(f"  TOP_N_COHORTS     = {TOP_N_COHORTS}")
+print(f"  DIST_TYPE         = {DIST_TYPE}")
+print(f"  LOGNORM_SIGMA_MAX = {LOGNORM_SIGMA_MAX}")
+print(f"  SELLER_VALUE      = {SELLER_VALUE}")
+print(f"  MAX_RESERVE_INC   = {MAX_RESERVE_INC}")
+print(f"{'─' * 60}")
+
 print("\nFitting distributions and solving for Myerson optimal reserves...")
 optimal_hr_map = train_optimal_reserves(train_df)
 
