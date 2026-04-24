@@ -750,13 +750,12 @@ def evaluate_all_cohorts(
     result = agg.sort_values("revenue_lift_pct", ascending=False).reset_index(drop=True)
     n_rows = len(result)
     for i, (_, row) in enumerate(result.iterrows(), 1):
-        pct = i / n_rows * 100
         ck_label = _display_cohort_key(row['placement_group'], row['cohort_key'])
         print(
             f"  [{row['placement_group']} / {ck_label}]  "
             f"new_hr=${row['new_hr_applied']:.4f}  "
             f"before=${row['ad_fee_before']:.2f}  after=${row['ad_fee_after']:.2f}  "
-            f"lift={row['revenue_lift_pct']:+.4f}%  ({pct:.0f}%)"
+            f"lift={row['revenue_lift_pct']:+.4f}%"
         )
 
     return result

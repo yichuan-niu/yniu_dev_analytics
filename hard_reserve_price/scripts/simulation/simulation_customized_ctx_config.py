@@ -14,7 +14,7 @@ TRAIN_SAMPLE_PCT    = 1              # auction-level sampling for training (MOD 
 EVAL_SAMPLE_PCT     = 100            # campaign-level sampling for eval (100 = no sampling)
 MAX_RANK            = 10              # use auction_rank < MAX_RANK for training bids
 MIN_COHORT_BIDS     = 100000           # min bid rows per cohort to fit a distribution
-TOP_N_COHORTS       = 1           # per placement group: keep only top-N cohorts by bid count (None = no limit)
+TOP_N_COHORTS       = 100           # per placement group: keep only top-N cohorts by bid count (None = no limit)
 DIST_TYPE           = "gamma"        # "gamma" or "lognormal"
 LOGNORM_SIGMA_MAX   = 1.2            # max sigma for lognormal (ensures monotone virtual valuation)
 SELLER_VALUE        = 0.0            # Myerson seller valuation (v_0), usually 0

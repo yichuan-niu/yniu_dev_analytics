@@ -205,7 +205,7 @@ sales_df = pd.read_pickle(f"../data/simulation_ctx_sales_{EVAL_START_DATE}_to_{E
 
 print(f"  Auctions with sales: {len(sales_df):,}")
 
-#%% Fit distributions and solve Myerson's equation per cohort
+# Fit distributions and solve Myerson's equation per cohort
 print(f"\n{'─' * 60}")
 print("Simulation Parameters")
 print(f"{'─' * 60}")
