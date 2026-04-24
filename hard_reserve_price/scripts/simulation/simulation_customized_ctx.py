@@ -139,7 +139,8 @@ SELECT
     AD_AUCTION_ID                                       AS auction_id,
     SUM(PRICE_UNIT_AMOUNT * QUANTITY_RECEIVED) / 100.0 AS attributed_sales_usd
 FROM proddb.public.FACT_ITEM_ORDER_ATTRIBUTION
-WHERE event_date BETWEEN '{eval_start_date}' AND '{eval_end_date}'
+WHERE SNAPSHOT_DATE BETWEEN DATEADD(day, -1, '{eval_start_date}'::DATE) AND DATEADD(day, 1, '{eval_end_date}'::DATE)
+  AND EVENT_TIMESTAMP >= '{eval_start_date}' AND EVENT_TIMESTAMP < DATEADD(day, 1, '{eval_end_date}'::DATE)
 GROUP BY AD_AUCTION_ID
 """
 
@@ -951,6 +952,41 @@ train_df = pd.read_pickle(f"../data/simulation_ctx_train_{TRAIN_START_DATE}_to_{
 
 print(f"  Training rows: {len(train_df):,}")
 
+#%% Evaluation: fetch all candidates for clicked auctions
+print(f"\nFetching evaluation data ({EVAL_START_DATE} – {EVAL_END_DATE})...")
+
+# eval_all = fetch_eval_data()
+# eval_all.to_pickle(f"../data/simulation_ctx_eval_{EVAL_START_DATE}_to_{EVAL_END_DATE}_smpl_{EVAL_SAMPLE_PCT}_df.pkl")
+
+eval_all = pd.read_pickle(f"../data/simulation_ctx_eval_{EVAL_START_DATE}_to_{EVAL_END_DATE}_smpl_{EVAL_SAMPLE_PCT}_df.pkl")
+
+print(f"  Eval candidate rows: {len(eval_all):,}")
+print(f"  Unique auctions:     {eval_all['auction_id'].nunique():,}")
+
+#%% Fetch budget and ROAS data
+print(f"\nFetching campaign daily budgets ({EVAL_START_DATE} – {EVAL_END_DATE})...")
+
+# budget_df = fetch_budget()
+# budget_df.to_pickle(f"../data/simulation_ctx_budget_{EVAL_START_DATE}_to_{EVAL_END_DATE}_df.pkl")
+
+budget_df = pd.read_pickle(f"../data/simulation_ctx_budget_{EVAL_START_DATE}_to_{EVAL_END_DATE}_df.pkl")
+
+budget_maps = {
+    dt: grp.set_index("campaign_id")["campaign_daily_budget_dollars"].to_dict()
+    for dt, grp in budget_df.groupby("date_est")
+}
+print(f"  Budget dates: {sorted(budget_maps.keys())}")
+print(f"  Campaigns with budget (total): {budget_df['campaign_id'].nunique():,}")
+
+print(f"\nFetching per-auction attributed sales ({EVAL_START_DATE} – {EVAL_END_DATE})...")
+
+# sales_df = fetch_sales()
+# sales_df.to_pickle(f"../data/simulation_ctx_sales_{EVAL_START_DATE}_to_{EVAL_END_DATE}_df.pkl")
+
+sales_df = pd.read_pickle(f"../data/simulation_ctx_sales_{EVAL_START_DATE}_to_{EVAL_END_DATE}_df.pkl")
+
+print(f"  Auctions with sales: {len(sales_df):,}")
+
 #%% Fit distributions and solve Myerson's equation per cohort
 print("\nFitting distributions and solving for Myerson optimal reserves...")
 optimal_hr_map = train_optimal_reserves(train_df)
@@ -966,41 +1002,6 @@ for pg in PLACEMENT_GROUP_ORDER:
             f"median=${np.median(r_stars):.3f}"
         )
 
-#%% Evaluation: fetch all candidates for clicked auctions
-print(f"\nFetching evaluation data ({EVAL_START_DATE} – {EVAL_END_DATE})...")
-
-# eval_all = fetch_eval_data()
-# eval_all.to_pickle(f"../data/simulation_ctx_eval_{EVAL_START_DATE}_to_{EVAL_END_DATE}_smpl_{EVAL_SAMPLE_PCT}_df.pkl")
-
-eval_all = pd.read_pickle(f"../data/simulation_ctx_eval_{EVAL_START_DATE}_to_{EVAL_END_DATE}_smpl_{EVAL_SAMPLE_PCT}_df.pkl")
-
-print(f"  Eval candidate rows: {len(eval_all):,}")
-print(f"  Unique auctions:     {eval_all['auction_id'].nunique():,}")
-
-#%% Fetch budget and ROAS data
-print(f"\nFetching campaign daily budgets ({EVAL_START_DATE} – {EVAL_END_DATE})...")
-
-budget_df = fetch_budget()
-budget_df.to_pickle(f"../data/simulation_ctx_budget_{EVAL_START_DATE}_to_{EVAL_END_DATE}_df.pkl")
-
-# budget_df = pd.read_pickle(f"../data/simulation_ctx_budget_{EVAL_START_DATE}_to_{EVAL_END_DATE}_df.pkl")
-
-budget_maps = {
-    dt: grp.set_index("campaign_id")["campaign_daily_budget_dollars"].to_dict()
-    for dt, grp in budget_df.groupby("date_est")
-}
-print(f"  Budget dates: {sorted(budget_maps.keys())}")
-print(f"  Campaigns with budget (total): {budget_df['campaign_id'].nunique():,}")
-
-print(f"\nFetching per-auction attributed sales ({EVAL_START_DATE} – {EVAL_END_DATE})...")
-
-sales_df = fetch_sales()
-sales_df.to_pickle(f"../data/simulation_ctx_sales_{EVAL_START_DATE}_to_{EVAL_END_DATE}_df.pkl")
-
-# sales_df = pd.read_pickle(f"../data/simulation_ctx_sales_{EVAL_START_DATE}_to_{EVAL_END_DATE}_df.pkl")
-
-print(f"  Auctions with sales: {len(sales_df):,}")
-
 #%% Run evaluation replay
 print("\nRunning auction replay with Myerson-optimal reserves...")
 # Add cohort columns to ALL candidates (needed for new_hr lookup in resolve)
@@ -1013,6 +1014,20 @@ eval_df = eval_df.merge(sales_df, on="auction_id", how="left")
 _apply_budget_caps(eval_df, budget_maps)
 
 summary = evaluate_all_cohorts(eval_df, optimal_hr_map)
+
+#%% Total revenue summary (all campaigns, eval dates)
+rev_before = eval_df["capped_baseline"].sum()
+rev_after = eval_df["capped_new"].sum()
+lift_amt = rev_after - rev_before
+lift_pct = lift_amt / rev_before * 100 if rev_before > 0 else 0.0
+print(f"\n{'═' * 60}")
+print("Total Revenue (all campaigns, eval dates)")
+print(f"{'═' * 60}")
+print(f"  Before:       ${rev_before:>14,.2f}")
+print(f"  After:        ${rev_after:>14,.2f}")
+print(f"  Lift:         ${lift_amt:>14,.2f}")
+print(f"  Lift %:        {lift_pct:>14.4f}%")
+print(f"{'═' * 60}")
 
 #%% Compute ROAS before/after
 summary = compute_roas(summary, eval_df)
