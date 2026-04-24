@@ -1,5 +1,7 @@
 import warnings
 warnings.filterwarnings("ignore")
+from IPython import get_ipython
+get_ipython().magic('reset -sf')
 
 import numpy as np
 import pandas as pd
@@ -223,7 +225,12 @@ print(f"  MAX_RESERVE_INC   = {MAX_RESERVE_INC}")
 print(f"{'─' * 60}")
 
 print("\nFitting distributions and solving for Myerson optimal reserves...")
-optimal_hr_map = train_optimal_reserves(train_df)
+optimal_hr_map = train_optimal_reserves(
+    train_df,
+    min_cohort_bids=MIN_COHORT_BIDS,
+    dist_type=DIST_TYPE,
+    top_n_cohorts=TOP_N_COHORTS,
+)
 
 # Summarise r* by placement group
 print("\nOptimal reserve summary by placement group:")
