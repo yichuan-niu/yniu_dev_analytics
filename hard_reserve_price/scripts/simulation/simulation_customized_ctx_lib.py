@@ -510,7 +510,7 @@ def train_optimal_reserves(
         optimal_hr[(pg, ck)] = r_star
         pct = i / n_cohorts * 100
         ck_label = _display_cohort_key(pg, ck)
-        print(f"  [{pg} / {ck_label}]  floor=${floor:.2f}  r*=${r_star:.4f}  n={len(bids):,}  ({pct:.0f}%)")
+        print(f"  [{pg} / {ck_label} ({ck})]  floor=${floor:.2f}  r*=${r_star:.4f}  n={len(bids):,}  ({pct:.0f}%)")
 
     print(f"\n  Cohorts solved: {len(optimal_hr)}")
     print(f"  Skipped (too few bids): {skipped_small}")
@@ -752,7 +752,7 @@ def evaluate_all_cohorts(
     for i, (_, row) in enumerate(result.iterrows(), 1):
         ck_label = _display_cohort_key(row['placement_group'], row['cohort_key'])
         print(
-            f"  [{row['placement_group']} / {ck_label}]  "
+            f"  [{row['placement_group']} / {ck_label}  ({row['cohort_key']})]  "
             f"new_hr=${row['new_hr_applied']:.4f}  "
             f"before=${row['ad_fee_before']:.2f}  after=${row['ad_fee_after']:.2f}  "
             f"lift={row['revenue_lift_pct']:+.4f}%"
