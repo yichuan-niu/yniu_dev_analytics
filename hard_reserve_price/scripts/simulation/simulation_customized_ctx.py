@@ -159,12 +159,12 @@ def plot_optimal_reserves(optimal_hr_map: dict) -> None:
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────
-#%% Training: fetch auction candidates from clicked auctions over training window
+# Training: fetch auction candidates from clicked auctions over training window
 
 # train_df = fetch_train_data()
-# train_df.to_pickle(f"../data/simulation_ctx_train_{TRAIN_START_DATE}_to_{TRAIN_END_DATE}_smpl_{TRAIN_SAMPLE_PCT}_df.pkl")
+# train_df.to_pickle(f"../data/simulation_ctx_train_{TRAIN_START_DATE}_to_{TRAIN_END_DATE}_smpl_{TRAIN_SAMPLE_PCT}_max_rank_{MAX_RANK}_df.pkl")
 
-train_df = pd.read_pickle(f"../data/simulation_ctx_train_{TRAIN_START_DATE}_to_{TRAIN_END_DATE}_smpl_{TRAIN_SAMPLE_PCT}_df.pkl")
+train_df = pd.read_pickle(f"../data/simulation_ctx_train_{TRAIN_START_DATE}_to_{TRAIN_END_DATE}_smpl_{TRAIN_SAMPLE_PCT}_max_rank_{MAX_RANK}_df.pkl")
 
 print(f"  Training rows: {len(train_df):,}")
 
@@ -172,9 +172,9 @@ print(f"  Training rows: {len(train_df):,}")
 print(f"\nFetching evaluation data ({EVAL_START_DATE} – {EVAL_END_DATE})...")
 
 # eval_all = fetch_eval_data()
-# eval_all.to_pickle(f"../data/simulation_ctx_eval_{EVAL_START_DATE}_to_{EVAL_END_DATE}_smpl_{EVAL_SAMPLE_PCT}_df.pkl")
+# eval_all.to_pickle(f"../data/simulation_ctx_eval_{EVAL_START_DATE}_to_{EVAL_END_DATE}_smpl_{EVAL_SAMPLE_PCT}_max_rank_{MAX_RANK}_df.pkl")
 
-eval_all = pd.read_pickle(f"../data/simulation_ctx_eval_{EVAL_START_DATE}_to_{EVAL_END_DATE}_smpl_{EVAL_SAMPLE_PCT}_df.pkl")
+eval_all = pd.read_pickle(f"../data/simulation_ctx_eval_{EVAL_START_DATE}_to_{EVAL_END_DATE}_smpl_{EVAL_SAMPLE_PCT}_max_rank_{MAX_RANK}_df.pkl")
 
 print(f"  Eval candidate rows: {len(eval_all):,}")
 print(f"  Unique auctions:     {eval_all['auction_id'].nunique():,}")
