@@ -12,7 +12,7 @@ EVAL_START_DATE     = "2026-04-01"   # evaluation window start (inclusive)
 EVAL_END_DATE       = "2026-04-02"   # evaluation window end (inclusive)
 TRAIN_SAMPLE_PCT    = 1              # auction-level sampling for training (MOD HASH < TRAIN_SAMPLE_PCT)
 EVAL_SAMPLE_PCT     = 100            # campaign-level sampling for eval (100 = no sampling)
-MAX_RANK            = 10              # use auction_rank < MAX_RANK for training bids
+MAX_RANK            = 20              # use auction_rank < MAX_RANK for training bids
 MIN_COHORT_BIDS     = 100000           # min bid rows per cohort to fit a distribution
 TOP_N_COHORTS       = 100           # per placement group: keep only top-N cohorts by bid count (None = no limit)
 DIST_TYPE           = "gamma"        # "gamma" or "lognormal"

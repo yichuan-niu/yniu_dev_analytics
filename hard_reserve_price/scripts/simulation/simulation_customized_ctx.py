@@ -397,7 +397,7 @@ print(f"{'═' * 60}")
 #%%
 plt.close("all")
 
-debug_cohort("Collection", "recommended", train_df, eval_all, budget_maps, reserve_price=0.6)
+debug_cohort("Collection", "recommended", train_df, eval_all, budget_maps, reserve_price=0.90)
 
 #%% Compute ROAS before/after
 summary = compute_roas(summary, eval_df)
