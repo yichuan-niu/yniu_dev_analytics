@@ -447,12 +447,17 @@ def train_optimal_reserves(
     If top_n_cohorts is set, only the top-N cohorts by bid count per
     placement group are considered (after the min_cohort_bids filter).
 
-    Returns dict[(placement_group, cohort_key)] = r_star.
+    Returns
+    -------
+    optimal_hr : dict[(placement_group, cohort_key)] = r_star
+    fitted_dists : dict[(placement_group, cohort_key)] = frozen scipy distribution
+        The truncated-MLE fitted distribution used to derive each r*.
     """
     df = _add_cohort_columns(train_df)
     df = df[df["placement_group"].isin(PLACEMENT_GROUP_ORDER)].copy()
 
     optimal_hr: dict = {}
+    fitted_dists: dict = {}
     skipped_small = skipped_solve = 0
 
     grouped = df.dropna(subset=["auction_bid_dollars", "hard_reserve_dollars"]).groupby(
@@ -508,6 +513,7 @@ def train_optimal_reserves(
             continue
 
         optimal_hr[(pg, ck)] = r_star
+        fitted_dists[(pg, ck)] = dist
         pct = i / n_cohorts * 100
         ck_label = _display_cohort_key(pg, ck)
         print(f"  [{pg} / {ck_label} ({ck})]  floor=${floor:.2f}  r*=${r_star:.4f}  n={len(bids):,}  ({pct:.0f}%)")
@@ -515,7 +521,7 @@ def train_optimal_reserves(
     print(f"\n  Cohorts solved: {len(optimal_hr)}")
     print(f"  Skipped (too few bids): {skipped_small}")
     print(f"  Skipped (no root / fit error): {skipped_solve}")
-    return optimal_hr
+    return optimal_hr, fitted_dists
 
 
 # ── Evaluation: auction resolution and budget-aware replay ────────────────────

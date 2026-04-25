@@ -33,7 +33,6 @@ from simulation_customized_ctx_lib import (
     fetch_budget,
     fetch_sales,
     _add_cohort_columns,
-    fit_distribution,
     train_optimal_reserves,
     resolve_auction_outcomes,
     _apply_budget_caps,
@@ -166,14 +165,21 @@ def plot_bid_distribution(
     ck,
     train_df: pd.DataFrame,
     eval_all: pd.DataFrame,
+    fitted_dist=None,
     *,
     reserve_price=None,
 ) -> None:
-    """Plot bid histograms with fitted PDF overlay for a single cohort.
+    """Plot bid histograms with training-fitted PDF overlay for a single cohort.
 
-    Fits a truncated distribution (configured by DIST_TYPE) independently on
-    train and eval bids above the floor, then overlays the truncated PDF on
-    each histogram to visualise goodness-of-fit.
+    Overlays the same training-fitted truncated PDF on both train and eval
+    histograms so you can assess (1) how well the parametric model captures
+    the training data and (2) how well it generalises to the eval period.
+
+    Parameters
+    ----------
+    fitted_dist : frozen scipy distribution, optional
+        The distribution fitted on training bids during train_optimal_reserves().
+        If None, the PDF overlay is skipped.
     """
     train = _add_cohort_columns(train_df)
     floor = FLOOR_PRICES[pg]
@@ -191,6 +197,12 @@ def plot_bid_distribution(
     x_max = max(train_bids.quantile(0.99), eval_bids.quantile(0.99))
     bins = np.linspace(0, x_max, 60)
 
+    # Truncated PDF from training fit (shared across both subplots)
+    if fitted_dist is not None:
+        x_pdf = np.linspace(floor, x_max, 300)
+        surv = 1.0 - fitted_dist.cdf(floor)
+        pdf_vals = fitted_dist.pdf(x_pdf) / surv if surv > 0 else fitted_dist.pdf(x_pdf)
+
     for ax, bids, label, color in [
         (ax_train, train_bids, "Train", "steelblue"),
         (ax_eval, eval_bids, "Eval", "darkorange"),
@@ -198,17 +210,11 @@ def plot_bid_distribution(
         ax.hist(bids, bins=bins, density=True, color=color, edgecolor="white",
                 alpha=0.7)
 
-        # Fit truncated distribution on bids > floor and overlay PDF
-        above_floor = bids[bids > floor].to_numpy(dtype=float)
-        if len(above_floor) > 10:
-            dist = fit_distribution(above_floor, floor)
-            x_pdf = np.linspace(floor, x_max, 300)
-            surv = 1.0 - dist.cdf(floor)
-            pdf_vals = dist.pdf(x_pdf) / surv if surv > 0 else dist.pdf(x_pdf)
-            # Scale: truncated PDF covers x > floor; histogram covers all bids
-            frac_above = len(above_floor) / len(bids)
+        # Overlay training-fitted PDF, scaled by fraction of bids above floor
+        if fitted_dist is not None:
+            frac_above = (bids > floor).sum() / len(bids)
             ax.plot(x_pdf, pdf_vals * frac_above, color="black", lw=1.5,
-                    label=f"Fitted {DIST_TYPE}")
+                    label=f"Train-fitted {DIST_TYPE}")
 
         if reserve_price is not None:
             ax.axvline(reserve_price, color="red", linestyle="--", lw=1.5,
@@ -231,6 +237,7 @@ def debug_cohort(
     train_df: pd.DataFrame,
     eval_all: pd.DataFrame,
     budget_maps: dict,
+    fitted_dist=None,
     *,
     reserve_price=None,
 ) -> None:
@@ -240,7 +247,8 @@ def debug_cohort(
     (all other cohorts keep their original hard reserve), then applies budget
     caps to compute the isolated revenue lift.
     """
-    plot_bid_distribution(pg, ck, train_df, eval_all, reserve_price=reserve_price)
+    plot_bid_distribution(pg, ck, train_df, eval_all, fitted_dist,
+                          reserve_price=reserve_price)
 
     if reserve_price is None:
         return
@@ -350,7 +358,7 @@ print(f"  MAX_RESERVE_INC   = {MAX_RESERVE_INC}")
 print(f"{'─' * 60}")
 
 print("\nFitting distributions and solving for Myerson optimal reserves...")
-optimal_hr_map = train_optimal_reserves(
+optimal_hr_map, fitted_dists = train_optimal_reserves(
     train_df,
     min_cohort_bids=MIN_COHORT_BIDS,
     dist_type=DIST_TYPE,
@@ -397,7 +405,8 @@ print(f"{'═' * 60}")
 #%%
 plt.close("all")
 
-debug_cohort("Collection", "recommended", train_df, eval_all, budget_maps, reserve_price=0.90)
+debug_cohort("Collection", "recommended", train_df, eval_all, budget_maps,
+             fitted_dists.get(("Collection", "recommended")), reserve_price=0.90)
 
 #%% Compute ROAS before/after
 summary = compute_roas(summary, eval_df)
