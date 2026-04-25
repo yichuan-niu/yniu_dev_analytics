@@ -56,7 +56,7 @@ WHERE acd.event_date BETWEEN '{train_start_date}' AND '{train_end_date}'
   AND acd.placement LIKE '%SPONSORED_PRODUCTS%'
   AND acd.auction_rank < {max_rank}
   AND acd.pricing_metadata IS NOT NULL
-  AND MOD(ABS(HASH(acd.auction_id)), 100) < {train_sample_pct}
+  AND MOD(ABS(HASH(acd.auction_id)), 1000000) < {train_sample_pct} * 10000
 """
 
 # ── Evaluation SQL ────────────────────────────────────────────────────────────
@@ -140,7 +140,7 @@ GROUP BY AD_AUCTION_ID
 def fetch_train_data(
     train_start_date: str = TRAIN_START_DATE,
     train_end_date: str = TRAIN_END_DATE,
-    train_sample_pct: int = TRAIN_SAMPLE_PCT,
+    train_sample_pct: float = TRAIN_SAMPLE_PCT,
     max_rank: int = MAX_RANK,
 ) -> pd.DataFrame:
     query = TRAINING_QUERY.format(

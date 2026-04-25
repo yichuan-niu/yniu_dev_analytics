@@ -376,7 +376,7 @@ for pg in PLACEMENT_GROUP_ORDER:
             f"median=${np.median(r_stars):.3f}"
         )
 
-#%% Run evaluation replay
+# Run evaluation replay
 print("\nRunning auction replay with Myerson-optimal reserves...")
 # Add cohort columns to ALL candidates (needed for new_hr lookup in resolve)
 eval_all = _add_cohort_columns(eval_all)
@@ -406,7 +406,7 @@ print(f"{'═' * 60}")
 plt.close("all")
 
 debug_cohort("Collection", "recommended", train_df, eval_all, budget_maps,
-             fitted_dists.get(("Collection", "recommended")), reserve_price=0.90)
+             fitted_dists.get(("Collection", "recommended")), reserve_price=1.2926)
 
 #%% Compute ROAS before/after
 summary = compute_roas(summary, eval_df)
