@@ -33,6 +33,7 @@ from simulation_customized_ctx_lib import (
     fetch_budget,
     fetch_sales,
     _add_cohort_columns,
+    fit_distribution,
     train_optimal_reserves,
     resolve_auction_outcomes,
     _apply_budget_caps,
@@ -160,6 +161,130 @@ def plot_optimal_reserves(optimal_hr_map: dict) -> None:
     plt.show()
 
 
+def plot_bid_distribution(
+    pg: str,
+    ck,
+    train_df: pd.DataFrame,
+    eval_all: pd.DataFrame,
+    *,
+    reserve_price=None,
+) -> None:
+    """Plot bid histograms with fitted PDF overlay for a single cohort.
+
+    Fits a truncated distribution (configured by DIST_TYPE) independently on
+    train and eval bids above the floor, then overlays the truncated PDF on
+    each histogram to visualise goodness-of-fit.
+    """
+    train = _add_cohort_columns(train_df)
+    floor = FLOOR_PRICES[pg]
+
+    train_bids = train.loc[
+        (train["placement_group"] == pg) & (train["cohort_key"] == ck),
+        "auction_bid_dollars",
+    ]
+    eval_bids = eval_all.loc[
+        (eval_all["placement_group"] == pg) & (eval_all["cohort_key"] == ck),
+        "auction_bid_dollars",
+    ]
+
+    fig, (ax_train, ax_eval) = plt.subplots(1, 2, figsize=(14, 5))
+    x_max = max(train_bids.quantile(0.99), eval_bids.quantile(0.99))
+    bins = np.linspace(0, x_max, 60)
+
+    for ax, bids, label, color in [
+        (ax_train, train_bids, "Train", "steelblue"),
+        (ax_eval, eval_bids, "Eval", "darkorange"),
+    ]:
+        ax.hist(bids, bins=bins, density=True, color=color, edgecolor="white",
+                alpha=0.7)
+
+        # Fit truncated distribution on bids > floor and overlay PDF
+        above_floor = bids[bids > floor].to_numpy(dtype=float)
+        if len(above_floor) > 10:
+            dist = fit_distribution(above_floor, floor)
+            x_pdf = np.linspace(floor, x_max, 300)
+            surv = 1.0 - dist.cdf(floor)
+            pdf_vals = dist.pdf(x_pdf) / surv if surv > 0 else dist.pdf(x_pdf)
+            # Scale: truncated PDF covers x > floor; histogram covers all bids
+            frac_above = len(above_floor) / len(bids)
+            ax.plot(x_pdf, pdf_vals * frac_above, color="black", lw=1.5,
+                    label=f"Fitted {DIST_TYPE}")
+
+        if reserve_price is not None:
+            ax.axvline(reserve_price, color="red", linestyle="--", lw=1.5,
+                       label=f"Reserve=${reserve_price:.4f}")
+        ax.axvline(floor, color="gray", linestyle=":", lw=1,
+                   label=f"Floor=${floor:.2f}")
+        ax.legend(fontsize=8)
+        ax.set_xlabel("Bid ($)")
+        ax.set_ylabel("Density")
+        ax.set_title(f"{label} (n={len(bids):,})")
+
+    fig.suptitle(f"Bid Distribution: {pg} / {ck}", fontsize=13)
+    plt.tight_layout()
+    plt.show()
+
+
+def debug_cohort(
+    pg: str,
+    ck,
+    train_df: pd.DataFrame,
+    eval_all: pd.DataFrame,
+    budget_maps: dict,
+    *,
+    reserve_price=None,
+) -> None:
+    """Inspect bid distributions and revenue for a single (placement_group, cohort_key).
+
+    Re-runs the full auction replay with ONLY this cohort's reserve changed
+    (all other cohorts keep their original hard reserve), then applies budget
+    caps to compute the isolated revenue lift.
+    """
+    plot_bid_distribution(pg, ck, train_df, eval_all, reserve_price=reserve_price)
+
+    if reserve_price is None:
+        return
+
+    # ── Re-run auction replay with only this cohort's reserve changed ────
+    single_hr_map = {(pg, ck): reserve_price}
+    eval_df = resolve_auction_outcomes(eval_all, single_hr_map)
+    _apply_budget_caps(eval_df, budget_maps)
+
+    # ── Revenue at given reserve ──────────────────────────────────────────
+    print(f"\n{'─' * 55}")
+    print(f"  Reserve price: ${reserve_price:.4f}")
+    print(f"{'─' * 55}")
+
+    # Training: each bid >= reserve represents a won auction paying at least r
+    train = _add_cohort_columns(train_df)
+    train_bids = train.loc[
+        (train["placement_group"] == pg) & (train["cohort_key"] == ck),
+        "auction_bid_dollars",
+    ]
+    n_train = len(train_bids)
+    n_above_train = (train_bids >= reserve_price).sum()
+    pct_train = n_above_train / n_train * 100 if n_train > 0 else 0
+    rev_train = n_above_train * reserve_price
+    print(f"  Train bids above reserve: {n_above_train:,} / {n_train:,} ({pct_train:.1f}%)")
+    print(f"  Train revenue lower bound: ${rev_train:,.2f}")
+
+    # Eval: isolated replay results for this cohort
+    cohort = eval_df[
+        (eval_df["placement_group"] == pg) & (eval_df["cohort_key"] == ck)
+    ]
+    n_eval = len(cohort)
+    n_above_eval = (cohort["auction_bid_dollars"] >= reserve_price).sum()
+    n_lost = n_eval - n_above_eval
+    rev_before = cohort["capped_baseline"].sum()
+    rev_after = cohort["capped_new"].sum()
+    lift = rev_after - rev_before
+    lift_pct = lift / rev_before * 100 if rev_before > 0 else 0.0
+    print(f"\n  Eval auctions: {n_eval:,}  (above reserve: {n_above_eval:,}, lost: {n_lost:,})")
+    print(f"  Eval revenue before (capped):    ${rev_before:,.2f}")
+    print(f"  Eval revenue after  (capped):    ${rev_after:,.2f}")
+    print(f"  Eval lift:                       ${lift:,.2f}  ({lift_pct:+.4f}%)")
+
+
 # ── Main ──────────────────────────────────────────────────────────────────────
 # Training: fetch auction candidates from clicked auctions over training window
 
@@ -269,6 +394,10 @@ print(f"  After:        ${rev_after:>14,.2f}")
 print(f"  Lift:         ${lift_amt:>14,.2f}")
 print(f"  Lift %:        {lift_pct:>14.4f}%")
 print(f"{'═' * 60}")
+#%%
+plt.close("all")
+
+debug_cohort("Collection", "recommended", train_df, eval_all, budget_maps, reserve_price=0.6)
 
 #%% Compute ROAS before/after
 summary = compute_roas(summary, eval_df)
