@@ -762,7 +762,7 @@ def evaluate_all_cohorts(
             f"  [{row['placement_group']} / {ck_label}  ({row['cohort_key']})]  "
             f"new_hr=${row['new_hr_applied']:.4f}  "
             f"before=${row['ad_fee_before']:.2f}  after=${row['ad_fee_after']:.2f}  "
-            f"lift={row['revenue_lift_pct']:+.4f}%"
+            f"lift=${row['revenue_lift']:+.2f} ({row['revenue_lift_pct']:+.4f}%)"
         )
 
     return result
