@@ -6,11 +6,11 @@ import snowflake.connector
 
 
 # ── Constants ─────────────────────────────────────────────────────────────────
-TRAIN_START_DATE    = "2026-03-31"   # training window start (inclusive)
+TRAIN_START_DATE    = "2026-03-25"   # training window start (inclusive)
 TRAIN_END_DATE      = "2026-03-31"   # training window end (inclusive)
 EVAL_START_DATE     = "2026-04-01"   # evaluation window start (inclusive)
-EVAL_END_DATE       = "2026-04-02"   # evaluation window end (inclusive)
-TRAIN_SAMPLE_PCT    = 0.1           # auction-level sampling for training (MOD HASH(1M) < PCT; 10000 = 1%)
+EVAL_END_DATE       = "2026-04-03"   # evaluation window end (inclusive)
+TRAIN_SAMPLE_PCT    = 0.05           # auction-level sampling for training (MOD HASH(1M) < PCT; 10000 = 1%)
 EVAL_SAMPLE_PCT     = 50            # campaign-level sampling for eval (100 = no sampling)
 MAX_RANK            = 1000              # use auction_rank < MAX_RANK for training bids
 MIN_COHORT_BIDS     = 100000           # min bid rows per cohort to fit a distribution

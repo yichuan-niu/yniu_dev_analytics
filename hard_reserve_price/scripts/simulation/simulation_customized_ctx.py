@@ -2,6 +2,7 @@ import warnings
 warnings.filterwarnings("ignore")
 from IPython import get_ipython
 get_ipython().magic('reset -sf')
+get_ipython().magic('clear')
 
 import numpy as np
 import pandas as pd
@@ -295,6 +296,23 @@ def debug_cohort(
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 # Training: fetch auction candidates from clicked auctions over training window
+print(f"\n{'─' * 60}")
+print("Simulation Parameters")
+print(f"{'─' * 60}")
+print(f"  TRAIN_START_DATE  = {TRAIN_START_DATE}")
+print(f"  TRAIN_END_DATE    = {TRAIN_END_DATE}")
+print(f"  EVAL_START_DATE   = {EVAL_START_DATE}")
+print(f"  EVAL_END_DATE     = {EVAL_END_DATE}")
+print(f"  TRAIN_SAMPLE_PCT  = {TRAIN_SAMPLE_PCT}")
+print(f"  EVAL_SAMPLE_PCT   = {EVAL_SAMPLE_PCT}")
+print(f"  MAX_RANK          = {MAX_RANK}")
+print(f"  MIN_COHORT_BIDS   = {MIN_COHORT_BIDS:,}")
+print(f"  TOP_N_COHORTS     = {TOP_N_COHORTS}")
+print(f"  DIST_TYPE         = {DIST_TYPE}")
+print(f"  LOGNORM_SIGMA_MAX = {LOGNORM_SIGMA_MAX}")
+print(f"  SELLER_VALUE      = {SELLER_VALUE}")
+print(f"  MAX_RESERVE_INC   = {MAX_RESERVE_INC}")
+print(f"{'─' * 60}")
 
 # train_df = fetch_train_data()
 # train_df.to_pickle(f"../data/simulation_ctx_train_{TRAIN_START_DATE}_to_{TRAIN_END_DATE}_smpl_{TRAIN_SAMPLE_PCT}_max_rank_{MAX_RANK}_df.pkl")
@@ -339,23 +357,6 @@ sales_df = pd.read_pickle(f"../data/simulation_ctx_sales_{EVAL_START_DATE}_to_{E
 print(f"  Auctions with sales: {len(sales_df):,}")
 
 # Fit distributions and solve Myerson's equation per cohort
-print(f"\n{'─' * 60}")
-print("Simulation Parameters")
-print(f"{'─' * 60}")
-print(f"  TRAIN_START_DATE  = {TRAIN_START_DATE}")
-print(f"  TRAIN_END_DATE    = {TRAIN_END_DATE}")
-print(f"  EVAL_START_DATE   = {EVAL_START_DATE}")
-print(f"  EVAL_END_DATE     = {EVAL_END_DATE}")
-print(f"  TRAIN_SAMPLE_PCT  = {TRAIN_SAMPLE_PCT}")
-print(f"  EVAL_SAMPLE_PCT   = {EVAL_SAMPLE_PCT}")
-print(f"  MAX_RANK          = {MAX_RANK}")
-print(f"  MIN_COHORT_BIDS   = {MIN_COHORT_BIDS:,}")
-print(f"  TOP_N_COHORTS     = {TOP_N_COHORTS}")
-print(f"  DIST_TYPE         = {DIST_TYPE}")
-print(f"  LOGNORM_SIGMA_MAX = {LOGNORM_SIGMA_MAX}")
-print(f"  SELLER_VALUE      = {SELLER_VALUE}")
-print(f"  MAX_RESERVE_INC   = {MAX_RESERVE_INC}")
-print(f"{'─' * 60}")
 
 print("\nFitting distributions and solving for Myerson optimal reserves...")
 optimal_hr_map, fitted_dists = train_optimal_reserves(
