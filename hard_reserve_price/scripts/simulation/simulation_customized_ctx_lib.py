@@ -747,13 +747,14 @@ def evaluate_all_cohorts(
         for pg, ck in zip(agg["placement_group"], agg["cohort_key"])
     ]
     agg["new_hr_applied"] = agg["r_star"]
+    agg["revenue_lift"] = agg["ad_fee_after"] - agg["ad_fee_before"]
     agg["revenue_lift_pct"] = (
         (agg["ad_fee_after"] - agg["ad_fee_before"]) / agg["ad_fee_before"] * 100
     )
     agg["avg_cpc_before"] = agg["ad_fee_before"] / agg["n_rows"]
     agg["avg_cpc_after"] = agg["ad_fee_after"] / agg["n_rows"]
 
-    result = agg.sort_values("revenue_lift_pct", ascending=False).reset_index(drop=True)
+    result = agg.sort_values("revenue_lift", ascending=False).reset_index(drop=True)
     n_rows = len(result)
     for i, (_, row) in enumerate(result.iterrows(), 1):
         ck_label = _display_cohort_key(row['placement_group'], row['cohort_key'])
