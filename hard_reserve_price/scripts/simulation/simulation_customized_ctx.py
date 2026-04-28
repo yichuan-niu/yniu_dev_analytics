@@ -25,6 +25,7 @@ from simulation_customized_ctx_config import (
     LOGNORM_SIGMA_MAX,
     SELLER_VALUE,
     MAX_RESERVE_INC,
+    KEEP_RESERVE_BELOW_FLOOR,
 )
 
 from simulation_customized_ctx_lib import (
@@ -312,6 +313,7 @@ print(f"  DIST_TYPE         = {DIST_TYPE}")
 print(f"  LOGNORM_SIGMA_MAX = {LOGNORM_SIGMA_MAX}")
 print(f"  SELLER_VALUE      = {SELLER_VALUE}")
 print(f"  MAX_RESERVE_INC   = {MAX_RESERVE_INC}")
+print(f"  KEEP_RESERVE_BELOW_FLOOR   = {KEEP_RESERVE_BELOW_FLOOR}")
 print(f"{'─' * 60}")
 
 # train_df = fetch_train_data()
@@ -325,9 +327,9 @@ print(f"  Training rows: {len(train_df):,}")
 print(f"\nFetching evaluation data ({EVAL_START_DATE} – {EVAL_END_DATE})...")
 
 # eval_all = fetch_eval_data()
-# eval_all.to_pickle(f"../data/simulation_ctx_eval_{EVAL_START_DATE}_to_{EVAL_END_DATE}_smpl_{EVAL_SAMPLE_PCT}_max_rank_{MAX_RANK}_df.pkl")
+# eval_all.to_pickle(f"../data/simulation_ctx_eval_{EVAL_START_DATE}_to_{EVAL_END_DATE}_smpl_{EVAL_SAMPLE_PCT}_df.pkl")
 
-eval_all = pd.read_pickle(f"../data/simulation_ctx_eval_{EVAL_START_DATE}_to_{EVAL_END_DATE}_smpl_{EVAL_SAMPLE_PCT}_max_rank_{MAX_RANK}_df.pkl")
+eval_all = pd.read_pickle(f"../data/simulation_ctx_eval_{EVAL_START_DATE}_to_{EVAL_END_DATE}_smpl_{EVAL_SAMPLE_PCT}_df.pkl")
 
 print(f"  Eval candidate rows: {len(eval_all):,}")
 print(f"  Unique auctions:     {eval_all['auction_id'].nunique():,}")

@@ -25,6 +25,7 @@ from simulation_customized_ctx_config import (
     LOGNORM_SIGMA_MAX,
     SELLER_VALUE,
     MAX_RESERVE_INC,
+    KEEP_RESERVE_BELOW_FLOOR,
     L1_CATEGORY_NAMES,
 )
 
@@ -103,7 +104,6 @@ base AS (
     WHERE acd.event_date BETWEEN '{eval_start_date}' AND '{eval_end_date}'
       AND acd.CURRENCY_ISO_TYPE IN ('USD')
       AND acd.placement LIKE '%SPONSORED_PRODUCTS%'
-      AND acd.auction_rank < {max_rank}
 )
 SELECT
     auction_id, campaign_id, placement, event_date, auction_rank,
@@ -164,14 +164,12 @@ def fetch_train_data(
 def fetch_eval_data(
     eval_start_date: str = EVAL_START_DATE,
     eval_end_date: str = EVAL_END_DATE,
-    eval_sample_pct: int = EVAL_SAMPLE_PCT,
-    max_rank: int = MAX_RANK,
+    eval_sample_pct: int = EVAL_SAMPLE_PCT
 ) -> pd.DataFrame:
     query = EVAL_QUERY.format(
         eval_start_date=eval_start_date,
         eval_end_date=eval_end_date,
         eval_sample_pct=eval_sample_pct,
-        max_rank=max_rank,
     )
     with get_connection() as conn:
         cursor = conn.cursor()
@@ -411,8 +409,11 @@ def clip_reserve(
     if r_star is None:
         return None
     if r_star <= floor:
-        print(f"  {label}r*=${r_star:.4f} <= floor=${floor:.2f}, skipping")
-        return None
+        if not KEEP_RESERVE_BELOW_FLOOR:
+            print(f"  {label}r*=${r_star:.4f} <= floor=${floor:.2f}, skipping")
+            return None
+        print(f"  {label}r*=${r_star:.4f} <= floor=${floor:.2f}, keeping (KEEP_RESERVE_BELOW_FLOOR=True)")
+        return r_star
     capped = min(r_star, floor + max_increment)
     if capped < r_star:
         print(f"  {label}r*=${r_star:.4f} capped to ${capped:.4f} (floor+{max_increment})")

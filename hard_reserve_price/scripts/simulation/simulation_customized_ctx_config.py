@@ -19,6 +19,7 @@ DIST_TYPE           = "lognormal"        # "gamma" or "lognormal"
 LOGNORM_SIGMA_MAX   = 1.2            # max sigma for lognormal (ensures monotone virtual valuation)
 SELLER_VALUE        = 0.0            # Myerson seller valuation (v_0), usually 0
 MAX_RESERVE_INC     = 5.0            # max allowed r* above floor (caps extreme tail fits)
+KEEP_RESERVE_BELOW_FLOOR = False     # True = keep r* <= floor for eval; False = discard them
 
 # Category ID → name mapping sourced from CATALOG_SERVICE_PROD.public.PRODUCT_CATEGORY.
 # To refresh: re-query and save with pickle.dump({str(r['id']): r['name'] for r in rows}, open(path, 'wb')).
