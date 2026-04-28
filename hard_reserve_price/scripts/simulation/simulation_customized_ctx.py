@@ -199,11 +199,15 @@ def plot_bid_distribution(
     x_max = max(train_bids.quantile(0.99), eval_bids.quantile(0.99))
     bins = np.linspace(0, x_max, 60)
 
-    # Truncated PDF from training fit (shared across both subplots)
+    # Full and truncated PDF from training fit (shared across both subplots)
     if fitted_dist is not None:
-        x_pdf = np.linspace(floor, x_max, 300)
         surv = 1.0 - fitted_dist.cdf(floor)
-        pdf_vals = fitted_dist.pdf(x_pdf) / surv if surv > 0 else fitted_dist.pdf(x_pdf)
+        # Full untruncated PDF (below floor region)
+        x_full = np.linspace(0, x_max, 500)
+        pdf_full = fitted_dist.pdf(x_full)
+        # Truncated PDF (above floor, what the data actually follows)
+        x_trunc = np.linspace(floor, x_max, 300)
+        pdf_trunc = fitted_dist.pdf(x_trunc) / surv if surv > 0 else fitted_dist.pdf(x_trunc)
 
     for ax, bids, label, color in [
         (ax_train, train_bids, "Train", "steelblue"),
@@ -212,11 +216,15 @@ def plot_bid_distribution(
         ax.hist(bids, bins=bins, density=True, color=color, edgecolor="white",
                 alpha=0.7)
 
-        # Overlay training-fitted PDF, scaled by fraction of bids above floor
         if fitted_dist is not None:
             frac_above = (bids > floor).sum() / len(bids)
-            ax.plot(x_pdf, pdf_vals * frac_above, color="black", lw=1.5,
-                    label=f"Train-fitted {DIST_TYPE}")
+            # Untruncated PDF over full range (dashed, shows missing mass below floor)
+            ax.plot(x_full, pdf_full * frac_above, color="black", lw=1,
+                    linestyle="--", alpha=0.5,
+                    label=f"Untruncated {DIST_TYPE}")
+            # Truncated PDF above floor (solid, matches observed data)
+            ax.plot(x_trunc, pdf_trunc * frac_above, color="black", lw=1.5,
+                    label=f"Truncated {DIST_TYPE}")
 
         if reserve_price is not None:
             ax.axvline(reserve_price, color="red", linestyle="--", lw=1.5,
@@ -239,7 +247,7 @@ def debug_cohort(
     train_df: pd.DataFrame,
     eval_all: pd.DataFrame,
     budget_maps: dict,
-    fitted_dist=None,
+    fitted_dists: dict,
     *,
     reserve_price=None,
 ) -> None:
@@ -249,7 +257,7 @@ def debug_cohort(
     (all other cohorts keep their original hard reserve), then applies budget
     caps to compute the isolated revenue lift.
     """
-    plot_bid_distribution(pg, ck, train_df, eval_all, fitted_dist,
+    plot_bid_distribution(pg, ck, train_df, eval_all, fitted_dists.get((pg, ck)),
                           reserve_price=reserve_price)
 
     if reserve_price is None:
@@ -555,10 +563,6 @@ def plot_monetization_rate(cohort_mr, top_n=15):
 
 plot_monetization_rate(cohort_mr)
 
-#%%
-# debug_cohort("Collection", "recommended", train_df, eval_all, budget_maps,
-#              fitted_dists.get(("Collection", "recommended")), reserve_price=1.2926)
-
 #%% Revenue lift cohort counts
 def print_revenue_lift_counts(summary: pd.DataFrame, optimal_hr_map: dict) -> None:
     """Print counts of positive vs negative revenue-lift cohorts per placement group.
@@ -605,3 +609,7 @@ def print_revenue_lift_counts(summary: pd.DataFrame, optimal_hr_map: dict) -> No
     print(f"{'═' * 75}")
 
 print_revenue_lift_counts(summary, optimal_hr_map)
+
+#%%
+plt.close("all")
+debug_cohort("DoubleDash", "0", train_df, eval_all, budget_maps, fitted_dists, reserve_price=0.8)
