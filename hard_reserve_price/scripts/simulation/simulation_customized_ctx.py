@@ -601,4 +601,4 @@ print_revenue_lift_counts(summary, optimal_hr_map)
 
 #%%
 plt.close("all")
-debug_cohort("DoubleDash", "0", train_df, eval_all, budget_maps, fitted_dists, reserve_price=0.8)
+debug_cohort("DoubleDash", "18", train_df, eval_all, budget_maps, fitted_dists, reserve_price=0.8)
