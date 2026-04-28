@@ -529,7 +529,7 @@ def plot_monetization_rate(cohort_mr, top_n=15):
 
     for ax, pg in zip(axes, PLACEMENT_GROUP_ORDER):
         sub = (
-            cohort_mr[cohort_mr["placement_group"] == pg]
+            cohort_mr[(cohort_mr["placement_group"] == pg) & (cohort_mr["mr_before"] > 0)]
             .nlargest(top_n, "mr_delta")
             .sort_values("mr_delta")
         )
