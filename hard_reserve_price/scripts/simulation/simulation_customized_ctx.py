@@ -405,11 +405,10 @@ print(f"  After:        ${rev_after:>14,.2f}")
 print(f"  Lift:         ${lift_amt:>14,.2f}")
 print(f"  Lift %:        {lift_pct:>14.4f}%")
 print(f"{'═' * 60}")
-#%%
-plt.close("all")
 
-debug_cohort("Collection", "recommended", train_df, eval_all, budget_maps,
-             fitted_dists.get(("Collection", "recommended")), reserve_price=1.2926)
+
+# debug_cohort("Collection", "recommended", train_df, eval_all, budget_maps,
+#              fitted_dists.get(("Collection", "recommended")), reserve_price=1.2926)
 
 #%% Compute ROAS before/after
 summary = compute_roas(summary, eval_df)
@@ -444,6 +443,7 @@ print(
 )
 
 #%% Plots
+plt.close("all")
 plot_optimal_reserves(optimal_hr_map)
 plot_revenue_lift(summary)
 plot_roas(summary)
@@ -553,7 +553,7 @@ def plot_monetization_rate(cohort_mr, top_n=15):
         ax.set_title(f"{pg} — Top {top_n} MR-increasing cohorts")
         ax.legend(fontsize=8)
 
-    plt.suptitle("Monetization Rate Before vs After Myerson Optimal Hard Reserve", fontsize=11, y=1.01)
+    plt.suptitle("Monetization Rate Before vs After Myerson Optimal Hard Reserve", fontsize=11)
     plt.tight_layout()
     plt.show()
 
