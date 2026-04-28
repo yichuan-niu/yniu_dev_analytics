@@ -406,10 +406,6 @@ print(f"  Lift:         ${lift_amt:>14,.2f}")
 print(f"  Lift %:        {lift_pct:>14.4f}%")
 print(f"{'═' * 60}")
 
-
-# debug_cohort("Collection", "recommended", train_df, eval_all, budget_maps,
-#              fitted_dists.get(("Collection", "recommended")), reserve_price=1.2926)
-
 #%% Compute ROAS before/after
 summary = compute_roas(summary, eval_df)
 
@@ -558,3 +554,54 @@ def plot_monetization_rate(cohort_mr, top_n=15):
     plt.show()
 
 plot_monetization_rate(cohort_mr)
+
+#%%
+# debug_cohort("Collection", "recommended", train_df, eval_all, budget_maps,
+#              fitted_dists.get(("Collection", "recommended")), reserve_price=1.2926)
+
+#%% Revenue lift cohort counts
+def print_revenue_lift_counts(summary: pd.DataFrame, optimal_hr_map: dict) -> None:
+    """Print counts of positive vs negative revenue-lift cohorts per placement group.
+
+    Aligns totals with optimal_hr_map: cohorts that were trained but missing
+    from the eval summary (no eval rows or zero baseline revenue) are reported
+    in a separate 'Not in eval' column.
+    """
+    print(f"\n{'═' * 75}")
+    print("Revenue Lift Cohort Counts (positive vs negative)")
+    print(f"{'═' * 75}")
+
+    hdr = (
+        f"  {'Placement Group':<25} {'Positive':>10} {'Negative':>10} {'Zero':>10}"
+        f" {'Not in eval':>12} {'Total':>10}"
+    )
+    print(hdr)
+    print(f"  {'─' * 80}")
+
+    total_pos, total_neg, total_zero, total_missing = 0, 0, 0, 0
+    for pg in PLACEMENT_GROUP_ORDER:
+        n_trained = sum(1 for (g, _) in optimal_hr_map if g == pg)
+        sub = summary[summary["placement_group"] == pg]
+        n_pos  = (sub["revenue_lift_pct"] > 0).sum()
+        n_neg  = (sub["revenue_lift_pct"] < 0).sum()
+        n_zero = (sub["revenue_lift_pct"] == 0).sum()
+        n_miss = n_trained - len(sub)
+        total_pos  += n_pos
+        total_neg  += n_neg
+        total_zero += n_zero
+        total_missing += n_miss
+        print(
+            f"  {pg:<25} {n_pos:>10,} {n_neg:>10,} {n_zero:>10,}"
+            f" {n_miss:>12,} {n_trained:>10,}"
+        )
+
+    print(f"  {'─' * 80}")
+    total = total_pos + total_neg + total_zero + total_missing
+    print(
+        f"  {'TOTAL':<25} {total_pos:>10,} {total_neg:>10,} {total_zero:>10,}"
+        f" {total_missing:>12,} {total:>10,}"
+    )
+    print(f"  (optimal_hr_map size: {len(optimal_hr_map):,})")
+    print(f"{'═' * 75}")
+
+print_revenue_lift_counts(summary, optimal_hr_map)
