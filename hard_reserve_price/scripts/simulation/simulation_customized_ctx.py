@@ -199,15 +199,10 @@ def plot_bid_distribution(
     x_max = max(train_bids.quantile(0.99), eval_bids.quantile(0.99))
     bins = np.linspace(0, x_max, 60)
 
-    # Full and truncated PDF from training fit (shared across both subplots)
+    # Untruncated PDF from training fit (shared across both subplots)
     if fitted_dist is not None:
-        surv = 1.0 - fitted_dist.cdf(floor)
-        # Full untruncated PDF (below floor region)
         x_full = np.linspace(0, x_max, 500)
         pdf_full = fitted_dist.pdf(x_full)
-        # Truncated PDF (above floor, what the data actually follows)
-        x_trunc = np.linspace(floor, x_max, 300)
-        pdf_trunc = fitted_dist.pdf(x_trunc) / surv if surv > 0 else fitted_dist.pdf(x_trunc)
 
     for ax, bids, label, color in [
         (ax_train, train_bids, "Train", "steelblue"),
@@ -217,14 +212,8 @@ def plot_bid_distribution(
                 alpha=0.7)
 
         if fitted_dist is not None:
-            frac_above = (bids > floor).sum() / len(bids)
-            # Untruncated PDF over full range (dashed, shows missing mass below floor)
-            ax.plot(x_full, pdf_full * frac_above, color="black", lw=1,
-                    linestyle="--", alpha=0.5,
-                    label=f"Untruncated {DIST_TYPE}")
-            # Truncated PDF above floor (solid, matches observed data)
-            ax.plot(x_trunc, pdf_trunc * frac_above, color="black", lw=1.5,
-                    label=f"Truncated {DIST_TYPE}")
+            ax.plot(x_full, pdf_full, color="black", lw=1.5,
+                    label=f"Fitted {DIST_TYPE} (untruncated)")
 
         if reserve_price is not None:
             ax.axvline(reserve_price, color="red", linestyle="--", lw=1.5,
