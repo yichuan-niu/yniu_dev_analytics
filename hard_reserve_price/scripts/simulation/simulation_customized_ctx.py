@@ -40,6 +40,7 @@ from simulation_customized_ctx_lib import (
     _apply_budget_caps,
     evaluate_all_cohorts,
     compute_roas,
+    filter_optimal_hr_map,
 )
 
 
@@ -365,6 +366,8 @@ optimal_hr_map, fitted_dists = train_optimal_reserves(
     top_n_cohorts=TOP_N_COHORTS,
 )
 
+optimal_hr_map = filter_optimal_hr_map(optimal_hr_map)
+
 # Summarise r* by placement group
 print("\nOptimal reserve summary by placement group:")
 for pg in PLACEMENT_GROUP_ORDER:
@@ -601,4 +604,4 @@ print_revenue_lift_counts(summary, optimal_hr_map)
 
 #%%
 plt.close("all")
-debug_cohort("DoubleDash", "18", train_df, eval_all, budget_maps, fitted_dists, reserve_price=0.8)
+debug_cohort("DoubleDash", "18", train_df, eval_all, budget_maps, fitted_dists, reserve_price=0.81)

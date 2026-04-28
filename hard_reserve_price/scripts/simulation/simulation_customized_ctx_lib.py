@@ -525,6 +525,59 @@ def train_optimal_reserves(
     return optimal_hr, fitted_dists
 
 
+def filter_optimal_hr_map(
+    hr_map: dict,
+    *,
+    exclude_keys=None,
+    exclude_pgs=None,
+    min_reserve=None,
+    max_reserve=None,
+    min_lift_pct=None,
+    summary_df=None,
+) -> dict:
+    """Remove cohorts from optimal_hr_map by various criteria.
+
+    Parameters
+    ----------
+    exclude_keys : list of (pg, cohort_key) tuples to drop explicitly.
+    exclude_pgs  : list of placement groups to drop entirely.
+    min_reserve / max_reserve : drop cohorts whose r* is outside this range.
+    min_lift_pct : drop cohorts whose revenue_lift_pct < threshold (requires summary_df).
+    summary_df   : evaluation summary DataFrame (needed for lift-based filtering).
+    """
+    filtered = dict(hr_map)
+
+    if exclude_keys:
+        for k in exclude_keys:
+            filtered.pop(k, None)
+
+    if exclude_pgs:
+        pgs = set(exclude_pgs)
+        filtered = {k: v for k, v in filtered.items() if k[0] not in pgs}
+
+    if min_reserve is not None:
+        filtered = {k: v for k, v in filtered.items() if v >= min_reserve}
+
+    if max_reserve is not None:
+        filtered = {k: v for k, v in filtered.items() if v <= max_reserve}
+
+    if min_lift_pct is not None:
+        if summary_df is None:
+            raise ValueError("summary_df is required for lift-based filtering")
+        lift_lookup = {
+            (row["placement_group"], row["cohort_key"]): row["revenue_lift_pct"]
+            for _, row in summary_df.iterrows()
+        }
+        filtered = {
+            k: v for k, v in filtered.items()
+            if lift_lookup.get(k, float("-inf")) >= min_lift_pct
+        }
+
+    removed = len(hr_map) - len(filtered)
+    print(f"  filter_optimal_hr_map: {removed} cohorts removed, {len(filtered)} remaining")
+    return filtered
+
+
 # ── Evaluation: auction resolution and budget-aware replay ────────────────────
 def _compute_winner_cpc(
     candidates: pd.DataFrame,
