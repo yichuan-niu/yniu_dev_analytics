@@ -163,6 +163,164 @@ def plot_optimal_reserves(optimal_hr_map: dict) -> None:
     plt.show()
 
 
+def print_revenue_lift_dollars_by_pg(summary: pd.DataFrame) -> None:
+    """Print summed positive / negative / net revenue lift ($) per placement group."""
+    print(f"\n{'═' * 75}")
+    print("Revenue Lift ($) by Placement Group")
+    print(f"{'═' * 75}")
+
+    hdr = (
+        f"  {'Placement Group':<25} {'Positive ($)':>16} {'Negative ($)':>16}"
+        f" {'Net ($)':>16}"
+    )
+    print(hdr)
+    print(f"  {'─' * 75}")
+
+    total_pos, total_neg = 0.0, 0.0
+    for pg in PLACEMENT_GROUP_ORDER:
+        sub = summary[summary["placement_group"] == pg]
+        pos = sub.loc[sub["revenue_lift"] > 0, "revenue_lift"].sum()
+        neg = sub.loc[sub["revenue_lift"] < 0, "revenue_lift"].sum()
+        total_pos += pos
+        total_neg += neg
+        print(
+            f"  {pg:<25} {pos:>16,.2f} {neg:>16,.2f} {pos + neg:>16,.2f}"
+        )
+
+    print(f"  {'─' * 75}")
+    print(
+        f"  {'TOTAL':<25} {total_pos:>16,.2f} {total_neg:>16,.2f}"
+        f" {total_pos + total_neg:>16,.2f}"
+    )
+    print(f"{'═' * 75}")
+
+
+def print_revenue_lift_counts(summary: pd.DataFrame, optimal_hr_map: dict) -> None:
+    """Print counts of positive vs negative revenue-lift cohorts per placement group.
+
+    Aligns totals with optimal_hr_map: cohorts that were trained but missing
+    from the eval summary (no eval rows or zero baseline revenue) are reported
+    in a separate 'Not in eval' column.
+    """
+    print(f"\n{'═' * 75}")
+    print("Revenue Lift Cohort Counts (positive vs negative)")
+    print(f"{'═' * 75}")
+
+    hdr = (
+        f"  {'Placement Group':<25} {'Positive':>10} {'Negative':>10} {'Zero':>10}"
+        f" {'Not in eval':>12} {'Total':>10}"
+    )
+    print(hdr)
+    print(f"  {'─' * 80}")
+
+    total_pos, total_neg, total_zero, total_missing = 0, 0, 0, 0
+    for pg in PLACEMENT_GROUP_ORDER:
+        n_trained = sum(1 for (g, _) in optimal_hr_map if g == pg)
+        sub = summary[summary["placement_group"] == pg]
+        n_pos  = (sub["revenue_lift_pct"] > 0).sum()
+        n_neg  = (sub["revenue_lift_pct"] < 0).sum()
+        n_zero = (sub["revenue_lift_pct"] == 0).sum()
+        n_miss = n_trained - len(sub)
+        total_pos  += n_pos
+        total_neg  += n_neg
+        total_zero += n_zero
+        total_missing += n_miss
+        print(
+            f"  {pg:<25} {n_pos:>10,} {n_neg:>10,} {n_zero:>10,}"
+            f" {n_miss:>12,} {n_trained:>10,}"
+        )
+
+    print(f"  {'─' * 80}")
+    total = total_pos + total_neg + total_zero + total_missing
+    print(
+        f"  {'TOTAL':<25} {total_pos:>10,} {total_neg:>10,} {total_zero:>10,}"
+        f" {total_missing:>12,} {total:>10,}"
+    )
+    print(f"  (optimal_hr_map size: {len(optimal_hr_map):,})")
+    print(f"{'═' * 75}")
+
+
+def print_revenue_lift_by_bucket(summary: pd.DataFrame) -> None:
+    """Print positive / negative / zero revenue-lift counts per baseline-revenue bucket.
+
+    Buckets cohorts by `ad_fee_before` (revenue before the HR change) so we can
+    see whether lift is concentrated in high- or low-revenue cohorts.
+    """
+    bins = [0, 1, 10, 100, 1_000, 10_000, np.inf]
+    labels = ["<$1", "$1–$10", "$10–$100", "$100–$1k", "$1k–$10k", "≥$10k"]
+    buckets = pd.cut(summary["ad_fee_before"], bins=bins, labels=labels, right=False)
+
+    print(f"\n{'═' * 75}")
+    print("Revenue Lift Cohort Counts by Baseline-Revenue Bucket (before HR change)")
+    print(f"{'═' * 75}")
+
+    hdr = (
+        f"  {'Revenue Bucket':<14} {'Positive':>10} {'Negative':>10} {'Zero':>10}"
+        f" {'Total':>10}"
+    )
+    print(hdr)
+    print(f"  {'─' * 60}")
+
+    total_pos, total_neg, total_zero = 0, 0, 0
+    for label in labels:
+        sub = summary[buckets == label]
+        n_pos  = (sub["revenue_lift_pct"] > 0).sum()
+        n_neg  = (sub["revenue_lift_pct"] < 0).sum()
+        n_zero = (sub["revenue_lift_pct"] == 0).sum()
+        total_pos  += n_pos
+        total_neg  += n_neg
+        total_zero += n_zero
+        print(
+            f"  {label:<14} {n_pos:>10,} {n_neg:>10,} {n_zero:>10,}"
+            f" {n_pos + n_neg + n_zero:>10,}"
+        )
+
+    print(f"  {'─' * 60}")
+    total = total_pos + total_neg + total_zero
+    print(
+        f"  {'TOTAL':<14} {total_pos:>10,} {total_neg:>10,} {total_zero:>10,}"
+        f" {total:>10,}"
+    )
+    print(f"{'═' * 75}")
+
+
+def plot_monetization_rate(cohort_mr, top_n=15):
+    fig, axes = plt.subplots(
+        1, len(PLACEMENT_GROUP_ORDER),
+        figsize=(5 * len(PLACEMENT_GROUP_ORDER), 6),
+    )
+    if len(PLACEMENT_GROUP_ORDER) == 1:
+        axes = [axes]
+
+    for ax, pg in zip(axes, PLACEMENT_GROUP_ORDER):
+        sub = (
+            cohort_mr[(cohort_mr["placement_group"] == pg) & (cohort_mr["mr_before"] > 0)]
+            .nlargest(top_n, "mr_delta")
+            .sort_values("mr_delta")
+        )
+        if sub.empty:
+            ax.set_visible(False)
+            continue
+
+        labels = [str(ck)[:30] for ck in sub["cohort_key"]]
+        y = np.arange(len(labels))
+        bar_h = 0.35
+
+        ax.barh(y + bar_h / 2, sub["mr_before"], bar_h, label="MR Before", color="steelblue", alpha=0.8)
+        ax.barh(y - bar_h / 2, sub["mr_after"],  bar_h, label="MR After",  color="darkorange", alpha=0.8)
+
+        ax.set_yticks(y)
+        ax.set_yticklabels(labels, fontsize=8)
+        ax.xaxis.set_major_formatter(plt.FuncFormatter(lambda v, _: f"{v:.1%}"))
+        ax.set_xlabel("Monetization Rate (CPC / bid)")
+        ax.set_title(f"{pg} — Top {top_n} MR-increasing cohorts")
+        ax.legend(fontsize=8)
+
+    plt.suptitle("Monetization Rate Before vs After Myerson Optimal Hard Reserve", fontsize=11)
+    plt.tight_layout()
+    plt.show()
+
+
 def plot_bid_distribution(
     pg: str,
     ck,
@@ -406,6 +564,11 @@ print(f"  Lift:         ${lift_amt:>14,.2f}")
 print(f"  Lift %:        {lift_pct:>14.4f}%")
 print(f"{'═' * 60}")
 
+# Revenue lift cohort counts
+print_revenue_lift_dollars_by_pg(summary)
+print_revenue_lift_counts(summary, optimal_hr_map)
+print_revenue_lift_by_bucket(summary)
+
 #%% Compute ROAS before/after
 summary = compute_roas(summary, eval_df)
 
@@ -516,137 +679,7 @@ for pg in PLACEMENT_GROUP_ORDER:
             f" {row['mr_delta']:>+8.4%}"
         )
 
-# ── Plot: MR before / after per placement group ───────────────────────────────
-def plot_monetization_rate(cohort_mr, top_n=15):
-    fig, axes = plt.subplots(
-        1, len(PLACEMENT_GROUP_ORDER),
-        figsize=(5 * len(PLACEMENT_GROUP_ORDER), 6),
-    )
-    if len(PLACEMENT_GROUP_ORDER) == 1:
-        axes = [axes]
-
-    for ax, pg in zip(axes, PLACEMENT_GROUP_ORDER):
-        sub = (
-            cohort_mr[(cohort_mr["placement_group"] == pg) & (cohort_mr["mr_before"] > 0)]
-            .nlargest(top_n, "mr_delta")
-            .sort_values("mr_delta")
-        )
-        if sub.empty:
-            ax.set_visible(False)
-            continue
-
-        labels = [str(ck)[:30] for ck in sub["cohort_key"]]
-        y = np.arange(len(labels))
-        bar_h = 0.35
-
-        ax.barh(y + bar_h / 2, sub["mr_before"], bar_h, label="MR Before", color="steelblue", alpha=0.8)
-        ax.barh(y - bar_h / 2, sub["mr_after"],  bar_h, label="MR After",  color="darkorange", alpha=0.8)
-
-        ax.set_yticks(y)
-        ax.set_yticklabels(labels, fontsize=8)
-        ax.xaxis.set_major_formatter(plt.FuncFormatter(lambda v, _: f"{v:.1%}"))
-        ax.set_xlabel("Monetization Rate (CPC / bid)")
-        ax.set_title(f"{pg} — Top {top_n} MR-increasing cohorts")
-        ax.legend(fontsize=8)
-
-    plt.suptitle("Monetization Rate Before vs After Myerson Optimal Hard Reserve", fontsize=11)
-    plt.tight_layout()
-    plt.show()
-
 plot_monetization_rate(cohort_mr)
-
-#%% Revenue lift cohort counts
-def print_revenue_lift_counts(summary: pd.DataFrame, optimal_hr_map: dict) -> None:
-    """Print counts of positive vs negative revenue-lift cohorts per placement group.
-
-    Aligns totals with optimal_hr_map: cohorts that were trained but missing
-    from the eval summary (no eval rows or zero baseline revenue) are reported
-    in a separate 'Not in eval' column.
-    """
-    print(f"\n{'═' * 75}")
-    print("Revenue Lift Cohort Counts (positive vs negative)")
-    print(f"{'═' * 75}")
-
-    hdr = (
-        f"  {'Placement Group':<25} {'Positive':>10} {'Negative':>10} {'Zero':>10}"
-        f" {'Not in eval':>12} {'Total':>10}"
-    )
-    print(hdr)
-    print(f"  {'─' * 80}")
-
-    total_pos, total_neg, total_zero, total_missing = 0, 0, 0, 0
-    for pg in PLACEMENT_GROUP_ORDER:
-        n_trained = sum(1 for (g, _) in optimal_hr_map if g == pg)
-        sub = summary[summary["placement_group"] == pg]
-        n_pos  = (sub["revenue_lift_pct"] > 0).sum()
-        n_neg  = (sub["revenue_lift_pct"] < 0).sum()
-        n_zero = (sub["revenue_lift_pct"] == 0).sum()
-        n_miss = n_trained - len(sub)
-        total_pos  += n_pos
-        total_neg  += n_neg
-        total_zero += n_zero
-        total_missing += n_miss
-        print(
-            f"  {pg:<25} {n_pos:>10,} {n_neg:>10,} {n_zero:>10,}"
-            f" {n_miss:>12,} {n_trained:>10,}"
-        )
-
-    print(f"  {'─' * 80}")
-    total = total_pos + total_neg + total_zero + total_missing
-    print(
-        f"  {'TOTAL':<25} {total_pos:>10,} {total_neg:>10,} {total_zero:>10,}"
-        f" {total_missing:>12,} {total:>10,}"
-    )
-    print(f"  (optimal_hr_map size: {len(optimal_hr_map):,})")
-    print(f"{'═' * 75}")
-
-print_revenue_lift_counts(summary, optimal_hr_map)
-
-
-def print_revenue_lift_by_bucket(summary: pd.DataFrame) -> None:
-    """Print positive / negative / zero revenue-lift counts per baseline-revenue bucket.
-
-    Buckets cohorts by `ad_fee_before` (revenue before the HR change) so we can
-    see whether lift is concentrated in high- or low-revenue cohorts.
-    """
-    bins = [0, 1, 10, 100, 1_000, 10_000, np.inf]
-    labels = ["<$1", "$1–$10", "$10–$100", "$100–$1k", "$1k–$10k", "≥$10k"]
-    buckets = pd.cut(summary["ad_fee_before"], bins=bins, labels=labels, right=False)
-
-    print(f"\n{'═' * 75}")
-    print("Revenue Lift Cohort Counts by Baseline-Revenue Bucket (before HR change)")
-    print(f"{'═' * 75}")
-
-    hdr = (
-        f"  {'Revenue Bucket':<14} {'Positive':>10} {'Negative':>10} {'Zero':>10}"
-        f" {'Total':>10}"
-    )
-    print(hdr)
-    print(f"  {'─' * 60}")
-
-    total_pos, total_neg, total_zero = 0, 0, 0
-    for label in labels:
-        sub = summary[buckets == label]
-        n_pos  = (sub["revenue_lift_pct"] > 0).sum()
-        n_neg  = (sub["revenue_lift_pct"] < 0).sum()
-        n_zero = (sub["revenue_lift_pct"] == 0).sum()
-        total_pos  += n_pos
-        total_neg  += n_neg
-        total_zero += n_zero
-        print(
-            f"  {label:<14} {n_pos:>10,} {n_neg:>10,} {n_zero:>10,}"
-            f" {n_pos + n_neg + n_zero:>10,}"
-        )
-
-    print(f"  {'─' * 60}")
-    total = total_pos + total_neg + total_zero
-    print(
-        f"  {'TOTAL':<14} {total_pos:>10,} {total_neg:>10,} {total_zero:>10,}"
-        f" {total:>10,}"
-    )
-    print(f"{'═' * 75}")
-
-print_revenue_lift_by_bucket(summary)
 
 #%%
 plt.close("all")
