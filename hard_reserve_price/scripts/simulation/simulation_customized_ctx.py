@@ -682,5 +682,5 @@ for pg in PLACEMENT_GROUP_ORDER:
 plot_monetization_rate(cohort_mr)
 
 #%%
-plt.close("all")
+# plt.close("all")
 debug_cohort("DoubleDash", "18", train_df, eval_all, budget_maps, fitted_dists, reserve_price=0.81)

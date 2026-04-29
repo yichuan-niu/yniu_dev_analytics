@@ -18,8 +18,17 @@ TOP_N_COHORTS       = 10000           # per placement group: keep only top-N coh
 DIST_TYPE           = "lognormal"        # "gamma" or "lognormal"
 LOGNORM_SIGMA_MAX   = 1.2            # max sigma for lognormal (ensures monotone virtual valuation)
 SELLER_VALUE        = 0.0            # Myerson seller valuation (v_0), usually 0
-MAX_RESERVE_INC     = 5.0            # max allowed r* above floor (caps extreme tail fits)
+MAX_RESERVE_INC     = 5.0            # absolute cap on final hard reserve (caps extreme tail fits)
 KEEP_RESERVE_BELOW_FLOOR = False     # True = keep r* <= floor for eval; False = discard them
+# Per-placement-group scaler applied to the full reserve:
+#   new_hr = r* * scaler   (then capped at MAX_RESERVE_INC)
+# 1.0 = use Myerson r* unchanged; <1.0 = more conservative; >1.0 = more aggressive.
+AGGRESSIVENESS_SCALER = {
+    "Search":     1.0,
+    "Category":   1.0,
+    "Collection": 0.1,
+    "DoubleDash": 0.1,
+}
 
 # Category ID → name mapping sourced from CATALOG_SERVICE_PROD.public.PRODUCT_CATEGORY.
 # To refresh: re-query and save with pickle.dump({str(r['id']): r['name'] for r in rows}, open(path, 'wb')).

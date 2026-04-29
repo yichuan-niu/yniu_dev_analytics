@@ -26,6 +26,7 @@ from simulation_customized_ctx_config import (
     SELLER_VALUE,
     MAX_RESERVE_INC,
     KEEP_RESERVE_BELOW_FLOOR,
+    AGGRESSIVENESS_SCALER,
     L1_CATEGORY_NAMES,
 )
 
@@ -397,14 +398,16 @@ def myerson_optimal_reserve(
 def clip_reserve(
     r_star,
     floor: float,
-    max_increment: float = MAX_RESERVE_INC,
+    scaler: float = 1.0,
+    max_reserve: float = MAX_RESERVE_INC,
     label: str = "",
 ):
     """
-    Validate and cap a raw Myerson reserve.
+    Validate, scale, and cap a raw Myerson reserve.
 
-    Returns None (with a log message) if r* is missing or at/below floor,
-    otherwise caps at floor + max_increment.
+    1. Returns None (with a log message) if r* is missing or at/below floor.
+    2. Scales the full reserve:  new = r* * scaler.
+    3. Caps the final value at max_reserve.
     """
     if r_star is None:
         return None
@@ -414,9 +417,12 @@ def clip_reserve(
             return None
         print(f"  {label}r*=${r_star:.4f} <= floor=${floor:.2f}, keeping (KEEP_RESERVE_BELOW_FLOOR=True)")
         return r_star
-    capped = min(r_star, floor + max_increment)
-    if capped < r_star:
-        print(f"  {label}r*=${r_star:.4f} capped to ${capped:.4f} (floor+{max_increment})")
+    scaled = r_star * scaler
+    capped = min(scaled, max_reserve)
+    if scaled != r_star:
+        print(f"  {label}r*=${r_star:.4f} scaled to ${scaled:.4f} (scaler={scaler})")
+    if capped < scaled:
+        print(f"  {label}scaled=${scaled:.4f} capped to ${capped:.4f} (max_reserve={max_reserve})")
     return capped
 
 
@@ -504,7 +510,12 @@ def train_optimal_reserves(
         try:
             dist = fit_distribution(bids, floor, dist_type)
             r_raw = myerson_optimal_reserve(dist, floor)
-            r_star = clip_reserve(r_raw, floor, label=f"[{pg} / {_display_cohort_key(pg, ck)}] ")
+            r_star = clip_reserve(
+                r_raw,
+                floor,
+                scaler=AGGRESSIVENESS_SCALER[pg],
+                label=f"[{pg} / {_display_cohort_key(pg, ck)}] ",
+            )
         except Exception:
             skipped_solve += 1
             continue
