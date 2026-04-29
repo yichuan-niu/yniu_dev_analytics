@@ -602,6 +602,52 @@ def print_revenue_lift_counts(summary: pd.DataFrame, optimal_hr_map: dict) -> No
 
 print_revenue_lift_counts(summary, optimal_hr_map)
 
+
+def print_revenue_lift_by_bucket(summary: pd.DataFrame) -> None:
+    """Print positive / negative / zero revenue-lift counts per baseline-revenue bucket.
+
+    Buckets cohorts by `ad_fee_before` (revenue before the HR change) so we can
+    see whether lift is concentrated in high- or low-revenue cohorts.
+    """
+    bins = [0, 1, 10, 100, 1_000, 10_000, np.inf]
+    labels = ["<$1", "$1–$10", "$10–$100", "$100–$1k", "$1k–$10k", "≥$10k"]
+    buckets = pd.cut(summary["ad_fee_before"], bins=bins, labels=labels, right=False)
+
+    print(f"\n{'═' * 75}")
+    print("Revenue Lift Cohort Counts by Baseline-Revenue Bucket (before HR change)")
+    print(f"{'═' * 75}")
+
+    hdr = (
+        f"  {'Revenue Bucket':<14} {'Positive':>10} {'Negative':>10} {'Zero':>10}"
+        f" {'Total':>10}"
+    )
+    print(hdr)
+    print(f"  {'─' * 60}")
+
+    total_pos, total_neg, total_zero = 0, 0, 0
+    for label in labels:
+        sub = summary[buckets == label]
+        n_pos  = (sub["revenue_lift_pct"] > 0).sum()
+        n_neg  = (sub["revenue_lift_pct"] < 0).sum()
+        n_zero = (sub["revenue_lift_pct"] == 0).sum()
+        total_pos  += n_pos
+        total_neg  += n_neg
+        total_zero += n_zero
+        print(
+            f"  {label:<14} {n_pos:>10,} {n_neg:>10,} {n_zero:>10,}"
+            f" {n_pos + n_neg + n_zero:>10,}"
+        )
+
+    print(f"  {'─' * 60}")
+    total = total_pos + total_neg + total_zero
+    print(
+        f"  {'TOTAL':<14} {total_pos:>10,} {total_neg:>10,} {total_zero:>10,}"
+        f" {total:>10,}"
+    )
+    print(f"{'═' * 75}")
+
+print_revenue_lift_by_bucket(summary)
+
 #%%
 plt.close("all")
 debug_cohort("DoubleDash", "18", train_df, eval_all, budget_maps, fitted_dists, reserve_price=0.81)
